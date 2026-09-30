@@ -60,17 +60,29 @@
         android:textColorLink="@color/home_brand"
         android:textIsSelectable="true" />
 
+    <!-- step 4: when a reply contains code / ```copy blocks the answer is
+         built here (text parts + copy boxes, in order) and bubble_text
+         above is hidden. Plain replies keep using bubble_text. -->
+    <LinearLayout
+        android:id="@+id/bubble_body"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone" />
+
     <!-- optional inline image (generated pictures) -->
     <ImageView
         android:id="@+id/bubble_img"
-        android:layout_width="match_parent"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
         android:adjustViewBounds="true"
+        android:maxWidth="320dp"
         android:maxHeight="420dp"
         android:scaleType="fitCenter"
-        android:background="@drawable/row_card"
-        android:padding="4dp"
+        android:background="@drawable/img_card_bg"
+        android:clickable="true"
+        android:focusable="true"
         android:visibility="gone"
         android:contentDescription="@null" />
 
@@ -102,6 +114,7 @@
             android:contentDescription="@string/ai_copy">
 
             <ImageView
+                android:id="@+id/act_copy_icon"
                 android:layout_width="16dp"
                 android:layout_height="16dp"
                 android:layout_gravity="center"
