@@ -267,10 +267,21 @@ public final class ChatSync {
                 ? System.currentTimeMillis() : s.created);
         body.put("history", s.history);
 
-        // the website deletes the previous chat.json then uploads the new
-        // one (no PATCH) — mirror it so both clients see identical state
+        // v1.1.7 (step 8): saves go through PATCH when the file id is known.
+        // The old delete-then-upload pattern broke the moment the worker made
+        // DELETE staff-only (owner order: students must never be able to
+        // delete anything, including their own chat.json). PATCH keeps the
+        // same file id, keeps the website's read flow intact, and stops the
+        // duplicate-file churn the delete+upload race used to cause.
         if (s.driveId != null && !s.driveId.isEmpty()) {
-            try { Drive.delete(s.driveId); } catch (Throwable ignored) {}
+            try {
+                Drive.updateContent(s.driveId, body.toString()
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                s.dirty = false;
+                return;
+            } catch (Throwable t) {
+                s.driveId = "";   // fall through: upload a fresh chat.json
+            }
         }
         JSONObject up = Drive.upload("chat.json", s.folderId, null,
                 body.toString()
