@@ -139,79 +139,163 @@ public final class Ui {
 
     // ── minimal markdown flavour for AI answers ─────────────────────────
 
+    /** One piece of an AI reply: prose, or a fenced block (code / copy box). */
+    public static final class Seg {
+        public final boolean code;
+        public final String lang;   // "" | "copy" | "java" | ...
+        public final String body;
+        Seg(boolean code, String lang, String body) {
+            this.code = code; this.lang = lang; this.body = body;
+        }
+    }
+
+    /**
+     * Split a reply on ``` fences (step 4). Odd blocks are fenced; the first
+     * line of a fence is its tag when it looks like one (```copy, ```java).
+     * An unclosed fence (cut-off reply) is still treated as a block.
+     * ```chart comes back as a code Seg with lang "chart" (step 6: the
+     * activity draws it with ChartView). ```file / ```pdffile are cut out
+     * by AiActivity.stripFileBlocks first; any left over become one bold
+     * note line so nothing raw ever shows.
+     */
+    public static java.util.List<Seg> segments(String text) {
+        java.util.List<Seg> out = new java.util.ArrayList<>();
+        if (text == null || text.isEmpty()) return out;
+        String[] blocks = text.split("```", -1);
+        for (int bi = 0; bi < blocks.length; bi++) {
+            String b = blocks[bi];
+            if (bi % 2 == 0) {
+                b = trimNewlines(b);
+                if (!b.trim().isEmpty()) out.add(new Seg(false, "", b));
+                continue;
+            }
+            String lang = "";
+            String body = b;
+            int nl = b.indexOf('\n');
+            if (nl >= 0) {
+                String first = b.substring(0, nl).trim();
+                if (first.length() <= 16 && first.matches("[A-Za-z0-9_+#.-]*")) {
+                    lang = first.toLowerCase(Locale.ROOT);
+                    body = b.substring(nl + 1);
+                }
+            }
+            body = trimNewlines(body);
+            if (lang.equals("chart")) {
+                // step 6: drawn natively (ChartView) — keep it as a segment
+                if (!body.trim().isEmpty()) out.add(new Seg(true, "chart", body));
+                continue;
+            }
+            if (lang.equals("file") || lang.equals("pdffile")) {
+                String label = lang.equals("pdffile") ? "PDF attached"
+                        : "File attached";
+                out.add(new Seg(false, "", "**· " + label
+                        + " — open on the website ·**"));
+                continue;
+            }
+            if (body.trim().isEmpty()) continue;
+            out.add(new Seg(true, lang, body));
+        }
+        return out;
+    }
+
+    /** Strip blank lines at both ends (keeps indentation of the first line). */
+    private static String trimNewlines(String s) {
+        int a = 0, b = s.length();
+        while (a < b && (s.charAt(a) == '\n' || s.charAt(a) == '\r')) a++;
+        while (b > a && (s.charAt(b - 1) == '\n' || s.charAt(b - 1) == '\r')) b--;
+        return s.substring(a, b);
+    }
+
     /**
      * Renders **bold** spans and strips light markdown (single *, `, and
-     * heading #) into a SpannableString. Fenced ```chart / ```file /
-     * ```pdffile blocks become a friendly one-line note (full artifact
-     * rendering is a follow-up). One pass, index-safe.
+     * heading #) into a SpannableString; "* item" / "- item" lines become
+     * real bullets. Any ``` fence still present (streaming partials, or a
+     * caller that did not split with segments()) is shown as plain code
+     * text, never as a raw fence. One pass, index-safe, no span limit.
      */
     public static CharSequence formatAi(String text) {
         if (text == null) return "";
         StringBuilder out = new StringBuilder();
-        int[] boldStarts = new int[64];
-        int[] boldEnds = new int[64];
-        int boldCount = 0;
+        java.util.ArrayList<int[]> bold = new java.util.ArrayList<>();
 
         String[] blocks = text.split("```", -1);
         for (int bi = 0; bi < blocks.length; bi++) {
             if (bi % 2 == 1) {
                 String head = blocks[bi].trim();
-                String label = head.startsWith("pdffile") ? "PDF attached"
-                        : head.startsWith("file") ? "File attached"
-                        : "Chart attached";
-                boldStarts[boldCount] = out.length();
-                out.append("· ").append(label)
-                        .append(" — open on the website ·");
-                boldEnds[boldCount] = out.length();
-                boldCount = Math.min(boldCount + 1, 63);
-                out.append('\n');
+                if (head.startsWith("pdffile") || head.startsWith("file")
+                        || head.startsWith("chart")) {
+                    String label = head.startsWith("pdffile") ? "PDF attached"
+                            : head.startsWith("file") ? "File attached"
+                            : "Chart attached";
+                    int st = out.length();
+                    out.append("· ").append(label)
+                            .append(" — open on the website ·");
+                    bold.add(new int[]{st, out.length()});
+                    out.append('\n');
+                } else {
+                    String body = blocks[bi];
+                    int nl = body.indexOf('\n');
+                    if (nl >= 0 && body.substring(0, nl).trim()
+                            .matches("[A-Za-z0-9_+#.-]{0,16}")) {
+                        body = body.substring(nl + 1);
+                    }
+                    out.append(trimNewlines(body)).append('\n');
+                }
                 continue;
             }
             String src = blocks[bi];
             int n = src.length();
             for (int i = 0; i < n; i++) {
                 char ch = src.charAt(i);
+                boolean lineStart = out.length() == 0
+                        || out.charAt(out.length() - 1) == '\n';
                 if (ch == '*' && i + 1 < n && src.charAt(i + 1) == '*') {
                     int close = src.indexOf("**", i + 2);
-                    if (close > i + 1 && boldCount < 63) {
-                        boldStarts[boldCount] = out.length();
+                    if (close > i + 1) {
+                        int st = out.length();
                         for (int k = i + 2; k < close; k++) {
-                            out.append(src.charAt(k));
+                            char c2 = src.charAt(k);
+                            if (c2 != '`') out.append(c2);
                         }
-                        boldEnds[boldCount] = out.length();
-                        boldCount++;
+                        bold.add(new int[]{st, out.length()});
                         i = close + 1;
                         continue;
                     }
-                    continue; // stray ** — drop it
+                    i++;                       // stray ** — drop both stars
+                    continue;
+                }
+                if (lineStart && (ch == '*' || ch == '-') && i + 1 < n
+                        && src.charAt(i + 1) == ' ') {
+                    out.append("\u2022");       // bullet; the space follows
+                    continue;
                 }
                 if (ch == '*' || ch == '`') continue;   // light markers
-                if (ch == '#' && (out.length() == 0
-                        || out.charAt(out.length() - 1) == '\n')) {
-                    while (i < n && src.charAt(i) == '#') i++;
-                    if (i < n && src.charAt(i) == ' ') {
-                        boldStarts[boldCount] = out.length();
-                        // heading = bold through end of line
-                        int eol = src.indexOf('\n', i);
+                if (ch == '#' && lineStart) {
+                    int j = i;
+                    while (j < n && src.charAt(j) == '#') j++;
+                    if (j < n && src.charAt(j) == ' ') {
+                        int st = out.length();
+                        int eol = src.indexOf('\n', j);
                         if (eol < 0) eol = n;
-                        for (int k = i + 1; k < eol; k++) {
-                            out.append(src.charAt(k));
+                        for (int k = j + 1; k < eol; k++) {
+                            char c2 = src.charAt(k);
+                            if (c2 != '*' && c2 != '`') out.append(c2);
                         }
-                        boldEnds[boldCount] = out.length();
-                        boldCount = Math.min(boldCount + 1, 63);
+                        bold.add(new int[]{st, out.length()});
                         i = eol - 1;
                         continue;
                     }
-                    continue;
                 }
                 out.append(ch);
             }
         }
 
         SpannableString ss = new SpannableString(out.toString());
-        for (int i = 0; i < boldCount; i++) {
-            ss.setSpan(new StyleSpan(android.graphics.Typeface.BOLD),
-                    boldStarts[i], boldEnds[i], 0);
+        for (int[] b : bold) {
+            if (b[1] > b[0] && b[1] <= ss.length()) {
+                ss.setSpan(new StyleSpan(android.graphics.Typeface.BOLD),
+                        b[0], b[1], 0);
+            }
         }
         return ss;
     }
@@ -315,6 +399,49 @@ public final class Ui {
         }
         File dir = a.getExternalFilesDir(null);
         if (dir == null) dir = a.getFilesDir();
+        File out = uniqueFile(dir, safe);
+        FileOutputStream fo = new FileOutputStream(out);
+        fo.write(data);
+        fo.close();
+        return out.getAbsolutePath();
+    }
+
+    /** Step 5: save an image into the shared Pictures/XavierDrive album
+     *  (MediaStore on API 29+; the app's own Pictures folder on older
+     *  devices, where scoped storage cannot be bypassed). Returns a
+     *  friendly path for the toast; throws when the write fails. */
+    public static String saveToPictures(Activity a, byte[] data,
+                                        String name, String mime)
+            throws Exception {
+        if (data == null || data.length == 0) throw new Exception("empty");
+        String safe = (name == null || name.trim().isEmpty()
+                ? "image.jpg" : name.trim())
+                .replaceAll("[/\\\\?%*:|\"<>]", "_");
+        String type = mime == null || mime.isEmpty() ? "image/jpeg" : mime;
+        if (Build.VERSION.SDK_INT >= 29) {
+            ContentValues cv = new ContentValues();
+            cv.put(MediaStore.Images.Media.DISPLAY_NAME, safe);
+            cv.put(MediaStore.Images.Media.MIME_TYPE, type);
+            cv.put(MediaStore.Images.Media.RELATIVE_PATH,
+                    "Pictures/XavierDrive");
+            cv.put(MediaStore.Images.Media.IS_PENDING, 1);
+            Uri uri = a.getContentResolver().insert(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+            if (uri == null) throw new Exception("insert failed");
+            OutputStream os = a.getContentResolver().openOutputStream(uri);
+            if (os == null) throw new Exception("open failed");
+            os.write(data);
+            os.flush();
+            os.close();
+            cv.clear();
+            cv.put(MediaStore.Images.Media.IS_PENDING, 0);
+            a.getContentResolver().update(uri, cv, null, null);
+            return "Pictures/XavierDrive";
+        }
+        File dir = a.getExternalFilesDir(
+                android.os.Environment.DIRECTORY_PICTURES);
+        if (dir == null) dir = a.getFilesDir();
+        if (!dir.exists()) dir.mkdirs();
         File out = uniqueFile(dir, safe);
         FileOutputStream fo = new FileOutputStream(out);
         fo.write(data);
