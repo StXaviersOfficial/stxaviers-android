@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Step 5: 64dp document tile in the composer strip. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="@color/home_tile_bg" />
+    <stroke android:width="1dp" android:color="@color/home_hairline" />
+    <corners android:radius="14dp" />
+</shape>
