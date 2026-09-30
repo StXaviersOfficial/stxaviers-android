@@ -182,6 +182,7 @@
     <string name="ai_sug_2">Make a study plan for this week</string>
     <string name="ai_sug_3">Summarise a chapter with key points</string>
     <string name="ai_error">Something went wrong on the way — please try again</string>
+    <string name="ai_quota_today">%1$d/%2$d today</string>
     <string name="ai_quota_warn">You\'ve reached today\'s AI limit — the answer below may be shorter than usual.</string>
     <string name="new_chat">New chat</string>
     <string name="ai_history_cd">Chat history</string>
@@ -204,6 +205,9 @@
     <string name="ai_menu_research">Deep research</string>
     <string name="ai_copy">Copy</string>
     <string name="ai_copied">Copied</string>
+    <string name="ai_pause">Pause</string>
+    <string name="ai_resume">Resume</string>
+    <string name="ai_copybox_label">Copy-ready text</string>
     <string name="ai_listen">Listen</string>
     <string name="ai_regenerate">Regenerate</string>
     <string name="ai_preview">Preview</string>
@@ -411,4 +415,25 @@
     <string name="adm_ban_confirm">Ban %s? They lose all access.</string>
     <string name="adm_role_confirm">Apply this change to %s?</string>
     <string name="adm_force_end">Force end</string>
+    <string name="ai_sheet_camera_sub">Take a photo to ask about</string>
+    <string name="ai_sheet_photos_sub">Attach images from your gallery</string>
+    <string name="ai_sheet_files_sub">PDFs, documents and text files</string>
+    <string name="ai_sheet_image_sub">Create an image from a description</string>
+    <string name="ai_sheet_research_sub">Search the web and read sources</string>
+    <string name="ai_sheet_on">On</string>
+    <string name="ai_section_pinned">Pinned</string>
+    <string name="ai_section_today">Today</string>
+    <string name="ai_section_yesterday">Yesterday</string>
+    <string name="ai_section_week">Previous 7 days</string>
+    <string name="ai_section_older">Older</string>
+    <string name="ai_busy_wait">Wait for the current answer to finish first</string>
+    <string name="ai_more_cd">Chat options</string>
+    <string name="ai_viewer_share">Share</string>
+    <string name="ai_viewer_download_cd">Download image</string>
+    <string name="ai_viewer_close_cd">Close</string>
+    <string name="ai_viewer_saved">Saved to %1$s</string>
+    <string name="ai_viewer_save_failed">Couldn\'t save the image</string>
+    <string name="ai_viewer_share_failed">Couldn\'t share the image</string>
+    <string name="ai_att_remove_cd">Remove attachment</string>
+    <string name="ai_chart_failed">Chart couldn\'t be drawn</string>
 </resources>
