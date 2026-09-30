@@ -142,6 +142,69 @@ public final class ApiClient {
         }
     }
 
+    /** Step 6: one parsed Server-Sent Event ({"t": "...", ...}). Called on
+     *  the CALLING (worker) thread — post to the UI thread yourself. */
+    public interface SseListener {
+        void onEvent(JSONObject ev);
+    }
+
+    /**
+     * POST a JSON body and read a text/event-stream response, handing each
+     * {@code data: {json}} event to the listener as it arrives. Blocking.
+     * Returns HTTP 200 + empty body on a clean finish; otherwise the error
+     * response (or a network failure) like every other call here. The read
+     * timeout is long (the Worker allows the backend up to 120 s) but any
+     * silence longer than that still ends the call.
+     */
+    public static Resp streamSse(String path, JSONObject body,
+                                 SseListener listener) {
+        HttpURLConnection c = null;
+        try {
+            byte[] bytes = (body == null ? new JSONObject() : body)
+                    .toString().getBytes(StandardCharsets.UTF_8);
+            c = (HttpURLConnection) new java.net.URL(GoogleAuth.WORKER_URL + path)
+                    .openConnection();
+            applyCommon(c, "POST", true);
+            c.setReadTimeout(130000);
+            c.setRequestProperty("Accept", "text/event-stream");
+            c.setDoOutput(true);
+            c.setFixedLengthStreamingMode(bytes.length);
+            c.setRequestProperty("Content-Type", "application/json");
+            OutputStream os = c.getOutputStream();
+            os.write(bytes);
+            os.close();
+            int code = c.getResponseCode();
+            if (code < 200 || code >= 300) return new Resp(code, readAll(c));
+            BufferedReader r = new BufferedReader(new InputStreamReader(
+                    c.getInputStream(), StandardCharsets.UTF_8));
+            StringBuilder data = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (line.startsWith("data:")) {
+                    String d = line.substring(5);
+                    if (d.startsWith(" ")) d = d.substring(1);
+                    data.append(d);
+                } else if (line.isEmpty() && data.length() > 0) {
+                    try {
+                        listener.onEvent(new JSONObject(data.toString()));
+                    } catch (Throwable ignored) {}
+                    data.setLength(0);
+                }
+            }
+            r.close();
+            if (data.length() > 0) {   // last event without a trailing blank line
+                try {
+                    listener.onEvent(new JSONObject(data.toString()));
+                } catch (Throwable ignored) {}
+            }
+            return new Resp(200, "");
+        } catch (Throwable t) {
+            return networkFail(t);
+        } finally {
+            if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
+        }
+    }
+
     /** POST raw bytes with a chosen content type (used for PATCH media). */
     public static Resp requestBytes(String method, String path,
                                     byte[] bytes, String contentType) {
