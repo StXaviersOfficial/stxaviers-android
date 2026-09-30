@@ -7,9 +7,11 @@ import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Bitmap;
+import android.graphics.Typeface;
 import android.graphics.BitmapFactory;
 import android.graphics.pdf.PdfRenderer;
 import android.graphics.drawable.ColorDrawable;
@@ -19,15 +21,23 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.text.Editable;
+import android.text.Spannable;
+import android.text.Spanned;
+import android.text.style.BackgroundColorSpan;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.DecelerateInterpolator;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
@@ -66,7 +76,8 @@ import java.util.Set;
  *    the mic is plain by default and turns blue with a waveform while
  *    listening (server Whisper on devices without a recognizer).
  *  • Responses are selectable; actions are icon-only (no pills).
- *  • Attachments up to 15 MB; Generate image is admins + developers.
+ *  • Attachments up to 15 MB; Generate image is available to EVERYONE
+ *    (owner order v1.1.7 — students included).
  */
 public class AiActivity extends XdActivity {
 
@@ -95,8 +106,10 @@ public class AiActivity extends XdActivity {
     private LinearLayout msgs, drawerList, attachRow;
     private ScrollView scroll;
     private EditText input, drawerSearch;
-    private TextView titleView;
+    private TextView titleView, quotaView;
     private View send, sendIcon, emptyState, typingRow;
+    /** step 6: live action rows inside the typing row (UI thread only). */
+    private AgentTrail agentTrail;
     private View drawer, drawerScrim, drawerPanel;
     private View attachStrip, modeStrip, modeOff;
     private TextView modeChip;
@@ -194,6 +207,7 @@ public class AiActivity extends XdActivity {
         sendIcon = findViewById(R.id.ai_send_icon);
         emptyState = findViewById(R.id.ai_empty);
         titleView = findViewById(R.id.ai_title);
+        quotaView = findViewById(R.id.ai_quota);
 
         drawer = findViewById(R.id.ai_drawer);
         drawerScrim = findViewById(R.id.drawer_scrim);
@@ -222,15 +236,8 @@ public class AiActivity extends XdActivity {
         });
 
         send.setOnClickListener(v -> send());
-        input.setOnEditorActionListener((v, actionId, ev) -> {
-            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND
-                    || (ev != null && ev.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER
-                        && ev.getAction() == android.view.KeyEvent.ACTION_DOWN)) {
-                send();
-                return true;
-            }
-            return false;
-        });
+        // v1.1.7: the keyboard's enter key inserts a new line (multiline
+        // field, no IME action) — only the send arrow submits.
 
         // the send button lights the moment there is something to send
         input.addTextChangedListener(new TextWatcher() {
@@ -612,7 +619,10 @@ public class AiActivity extends XdActivity {
         // file cards (preview + download) below the reply
         List<Object> blocks = new ArrayList<>();
         if (!user) shown = stripFileBlocks(shown, blocks);
-        tv.setText(user ? shown : Ui.formatAi(shown));
+        // step 4: plain prose stays in bubble_text; replies with code /
+        // ```copy blocks are built as text parts + copy boxes
+        final RowSpeech speech = user ? null : buildAiBody(v, tv, shown);
+        if (user) tv.setText(shown);
         TextView tt = v.findViewById(R.id.bubble_time);
         if (tt != null) tt.setText(time);
 
@@ -622,18 +632,20 @@ public class AiActivity extends XdActivity {
             if (img != null && imgPath != null) {
                 File f = new File(imgPath);
                 if (f.exists()) {
-                    Bitmap bmp = BitmapFactory.decodeFile(imgPath);
+                    final Bitmap bmp = BitmapFactory.decodeFile(imgPath);
                     if (bmp != null) {
                         img.setImageBitmap(bmp);
+                        img.setClipToOutline(true);   // rounded card
                         img.setVisibility(View.VISIBLE);
-                        img.setOnClickListener(x -> {
-                            Ui.openFile(this, f, "image/jpeg");
-                        });
+                        img.setOnClickListener(x ->
+                                showImageViewer(bmp, f, f.getName()));
                     }
                 }
             }
-            bindActions(v, histIndex, shown);
+            bindActions(v, histIndex, shown, speech);
             addFileCards(v, blocks);
+        } else {
+            bindUserCopy(v, shown);
         }
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -648,54 +660,355 @@ public class AiActivity extends XdActivity {
     }
 
     /** Copy / Listen / Regenerate under an AI response — icon-only. */
-    private void bindActions(View row, final int histIndex, final String text) {
+    private void bindActions(View row, final int histIndex,
+                             final String text, final RowSpeech speech) {
         View copy = row.findViewById(R.id.act_copy);
+        final ImageView copyIcon = row.findViewById(R.id.act_copy_icon);
+        // copies the reply's markdown source; icon turns into a tick
         if (copy != null) copy.setOnClickListener(v -> {
-            try {
-                ClipboardManager cm = (ClipboardManager)
-                        getSystemService(CLIPBOARD_SERVICE);
-                cm.setPrimaryClip(ClipData.newPlainText(
-                        getString(R.string.app_name), text));
-                Ui.toast(this, getString(R.string.ai_copied));
-            } catch (Throwable ignored) {}
+            if (copyText(text)) flashCopied(copyIcon);
         });
 
         final View listen = row.findViewById(R.id.act_listen);
         final ImageView listenIcon = row.findViewById(R.id.act_listen_icon);
-        if (listen != null) listen.setOnClickListener(v -> {
-            if (TtsPlayer.isPlaying()) {
-                TtsPlayer.stop();
-                setListenUi(listenIcon, false);
-                return;
+        if (listen != null && speech != null) {
+            if (speech.spoken.trim().isEmpty()) {
+                listen.setVisibility(View.GONE);      // code-only reply
+            } else {
+                speech.button = listen;
+                speech.icon = listenIcon;
+                listen.setOnClickListener(v -> {
+                    if (TtsPlayer.isCurrent(speech)) {
+                        int st = TtsPlayer.getState();
+                        if (st == TtsPlayer.PLAYING) TtsPlayer.pause();
+                        else if (st == TtsPlayer.PAUSED) TtsPlayer.resume();
+                        else TtsPlayer.stop();          // still loading: cancel
+                        return;
+                    }
+                    // starting another message stops (and resets) the first
+                    TtsPlayer.speak(AiActivity.this, speech.spoken, voice,
+                            speech);
+                });
             }
-            setListenUi(listenIcon, true);
-            TtsPlayer.speak(AiActivity.this, plain(text), voice,
-                    new TtsPlayer.State() {
-                @Override public void onState(boolean playing) {
-                    setListenUi(listenIcon, playing);
-                }
-                @Override public void onError(String message) {
-                    setListenUi(listenIcon, false);
-                    Ui.toast(AiActivity.this,
-                            getString(R.string.ai_tts_failed));
-                }
-            });
-        });
+        }
 
         View regen = row.findViewById(R.id.act_regen);
         if (regen != null) regen.setOnClickListener(v ->
                 regenerate(histIndex));
     }
 
-    private void setListenUi(ImageView icon, boolean on) {
-        if (icon != null) icon.setColorFilter(Fx.color(this, on
-                ? R.color.home_brand : R.color.home_muted));
+    /** Copy button under the user's own message (icon -> tick). */
+    private void bindUserCopy(View row, final String text) {
+        View copy = row.findViewById(R.id.act_copy);
+        final ImageView icon = row.findViewById(R.id.act_copy_icon);
+        if (copy != null) copy.setOnClickListener(v -> {
+            if (copyText(text)) flashCopied(icon);
+        });
     }
 
-    /** Markdown stripped — what the voice reads. */
-    private static String plain(String s) {
-        return s == null ? "" : s.replace("*", "").replace("#", "")
-                .replace("`", "");
+    private boolean copyText(String text) {
+        try {
+            ClipboardManager cm = (ClipboardManager)
+                    getSystemService(CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText(
+                    getString(R.string.app_name), text == null ? "" : text));
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Copy icon -> brand-coloured tick for ~1.5 s, then back. */
+    private void flashCopied(final ImageView icon) {
+        if (icon == null) return;
+        Object prev = icon.getTag();
+        if (prev instanceof Runnable) h.removeCallbacks((Runnable) prev);
+        icon.setImageResource(R.drawable.ic_tick);
+        icon.setImageTintList(ColorStateList.valueOf(
+                Fx.color(this, R.color.home_brand)));
+        Runnable back = () -> {
+            icon.setImageResource(R.drawable.ic_copy);
+            icon.setImageTintList(ColorStateList.valueOf(
+                    Fx.color(this, R.color.home_muted)));
+            icon.setTag(null);
+        };
+        icon.setTag(back);
+        h.postDelayed(back, 1500L);
+    }
+
+    // ═══════════════ message body: prose + copy boxes + speech ═════════
+
+    /**
+     * Fill an AI bubble. No fences -> the single bubble_text. Fences ->
+     * bubble_text is hidden and bubble_body gets, in order, prose TextViews
+     * and copy boxes (```copy and ordinary code blocks, each with its own
+     * Copy button that copies ONLY that block). Returns the speech helper
+     * that maps the spoken string back onto the visible TextViews.
+     */
+    private RowSpeech buildAiBody(View row, TextView tv, String shown) {
+        List<Ui.Seg> segs = Ui.segments(shown);
+        boolean hasCode = false;
+        for (Ui.Seg sg : segs) if (sg.code) { hasCode = true; break; }
+        List<TextView> views = new ArrayList<>();
+        List<Integer> offs = new ArrayList<>();
+        StringBuilder spoken = new StringBuilder();
+        LinearLayout body = row.findViewById(R.id.bubble_body);
+        if (!hasCode || body == null) {
+            CharSequence f = Ui.formatAi(shown);
+            tv.setText(f, TextView.BufferType.SPANNABLE);
+            views.add(tv);
+            offs.add(0);
+            spoken.append(f);
+        } else {
+            tv.setVisibility(View.GONE);
+            body.setVisibility(View.VISIBLE);
+            for (Ui.Seg sg : segs) {
+                if (sg.code) {
+                    body.addView("chart".equals(sg.lang)
+                            ? buildChartCard(sg) : buildCodeBox(sg));
+                    continue;
+                }
+                TextView t = cloneBodyText(tv);
+                CharSequence f = Ui.formatAi(sg.body);
+                t.setText(f, TextView.BufferType.SPANNABLE);
+                body.addView(t);
+                views.add(t);
+                offs.add(spoken.length());
+                spoken.append(f).append("\n\n");   // code is never read aloud
+            }
+        }
+        return new RowSpeech(views, offs, spoken.toString());
+    }
+
+    /** A prose TextView that looks exactly like bubble_text. */
+    private TextView cloneBodyText(TextView src) {
+        TextView t = new TextView(this);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) (8 * getResources().getDisplayMetrics().density);
+        t.setLayoutParams(lp);
+        t.setTextSize(composedFontSize());
+        t.setTypeface(src.getTypeface());
+        t.setTextColor(src.getTextColors());
+        t.setLinkTextColor(src.getLinkTextColors());
+        t.setLineSpacing(src.getLineSpacingExtra(),
+                src.getLineSpacingMultiplier());
+        t.setTextIsSelectable(true);
+        return t;
+    }
+
+    /** Step 6: a ```chart block as a native chart card (title + Canvas
+     *  chart). A spec that cannot be drawn shows one quiet note line. */
+    private View buildChartCard(Ui.Seg sg) {
+        final float dp = getResources().getDisplayMetrics().density;
+        ChartView cv = ChartView.from(this, sg.body);
+        if (cv == null) {
+            TextView note = new TextView(this);
+            LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            np.topMargin = (int) (8 * dp);
+            note.setLayoutParams(np);
+            note.setText(R.string.ai_chart_failed);
+            note.setTextSize(12.5f);
+            note.setTextColor(Fx.color(this, R.color.home_muted));
+            return note;
+        }
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackgroundResource(R.drawable.copybox_bg);
+        card.setPadding((int) (12 * dp), (int) (12 * dp),
+                (int) (12 * dp), (int) (10 * dp));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) (10 * dp);
+        lp.bottomMargin = (int) (2 * dp);
+        card.setLayoutParams(lp);
+        if (!cv.getTitle().isEmpty()) {
+            TextView t = new TextView(this);
+            t.setText(cv.getTitle());
+            t.setTextSize(13.5f);
+            t.setTypeface(Typefaces.interMedium(this));
+            t.setTextColor(Fx.color(this, R.color.home_ink));
+            t.setPadding(0, 0, 0, (int) (8 * dp));
+            card.addView(t);
+        }
+        card.addView(cv, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        return card;
+    }
+
+    /** Bordered rounded box + Copy button (top-right) for one fenced block. */
+    private View buildCodeBox(final Ui.Seg sg) {
+        final float dp = getResources().getDisplayMetrics().density;
+        final boolean plainBox = sg.lang.isEmpty() || "copy".equals(sg.lang);
+        final int brand = Fx.color(this, R.color.home_brand);
+        final int muted = Fx.color(this, R.color.home_muted);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackgroundResource(R.drawable.copybox_bg);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        blp.topMargin = (int) (10 * dp);
+        blp.bottomMargin = (int) (2 * dp);
+        box.setLayoutParams(blp);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding((int) (14 * dp), (int) (4 * dp),
+                (int) (6 * dp), 0);
+
+        TextView label = new TextView(this);
+        label.setText(plainBox ? getString(R.string.ai_copybox_label)
+                : sg.lang.toUpperCase(Locale.ROOT));
+        label.setTextSize(11f);
+        label.setTextColor(muted);
+        label.setTypeface(Typefaces.interRegular(this));
+        head.addView(label, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final LinearLayout btn = new LinearLayout(this);
+        btn.setOrientation(LinearLayout.HORIZONTAL);
+        btn.setGravity(Gravity.CENTER_VERTICAL);
+        btn.setPadding((int) (10 * dp), (int) (8 * dp),
+                (int) (10 * dp), (int) (8 * dp));
+        btn.setClickable(true);
+        btn.setFocusable(true);
+        btn.setForeground(getDrawable(R.drawable.home_ripple_pill));
+        btn.setContentDescription(getString(R.string.ai_copy));
+        final ImageView ic = new ImageView(this);
+        ic.setImageResource(R.drawable.ic_copy);
+        ic.setImageTintList(ColorStateList.valueOf(brand));
+        btn.addView(ic, new LinearLayout.LayoutParams(
+                (int) (14 * dp), (int) (14 * dp)));
+        final TextView tx = new TextView(this);
+        tx.setText(R.string.ai_copy);
+        tx.setTextSize(12f);
+        tx.setTextColor(brand);
+        tx.setTypeface(Typefaces.interRegular(this));
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        tlp.leftMargin = (int) (6 * dp);
+        btn.addView(tx, tlp);
+        final Runnable back = () -> {
+            ic.setImageResource(R.drawable.ic_copy);
+            tx.setText(R.string.ai_copy);
+        };
+        btn.setOnClickListener(x -> {
+            if (!copyText(sg.body)) return;       // ONLY this block
+            ic.setImageResource(R.drawable.ic_tick);
+            tx.setText(R.string.ai_copied);
+            h.removeCallbacks(back);
+            h.postDelayed(back, 1500L);
+        });
+        head.addView(btn);
+        box.addView(head);
+
+        TextView code = new TextView(this);
+        code.setText(sg.body);
+        code.setTextSize(12.5f);
+        code.setTypeface(Typeface.MONOSPACE);
+        code.setTextColor(Fx.color(this, R.color.home_ink));
+        code.setTextIsSelectable(true);
+        code.setPadding((int) (14 * dp), (int) (2 * dp),
+                (int) (14 * dp), (int) (14 * dp));
+        if (plainBox) {
+            box.addView(code, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+        } else {
+            code.setHorizontallyScrolling(true);   // code keeps its lines
+            HorizontalScrollView hs = new HorizontalScrollView(this);
+            hs.setHorizontalScrollBarEnabled(false);
+            hs.addView(code, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+            box.addView(hs, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        return box;
+    }
+
+    /**
+     * One AI message's speech: owns the icon state (speaker / pause / play)
+     * and the live word highlight. Being the TtsPlayer listener itself is
+     * how a tap knows whether THIS message is the one that is speaking.
+     */
+    private final class RowSpeech implements TtsPlayer.Listener {
+        final List<TextView> views;
+        final List<Integer> offs;
+        final String spoken;
+        View button;
+        ImageView icon;
+        BackgroundColorSpan span;
+        TextView spanOn;
+
+        RowSpeech(List<TextView> views, List<Integer> offs, String spoken) {
+            this.views = views;
+            this.offs = offs;
+            this.spoken = spoken;
+        }
+
+        @Override public void onStateChanged(int st) {
+            if (icon != null) {
+                icon.setImageResource(st == TtsPlayer.PLAYING
+                        ? R.drawable.ic_pause
+                        : st == TtsPlayer.PAUSED ? R.drawable.ic_play
+                        : R.drawable.ic_volume);
+                icon.setImageTintList(ColorStateList.valueOf(Fx.color(
+                        AiActivity.this, st == TtsPlayer.IDLE
+                                ? R.color.home_muted : R.color.home_brand)));
+            }
+            if (button != null) {
+                button.setContentDescription(getString(
+                        st == TtsPlayer.PLAYING ? R.string.ai_pause
+                                : st == TtsPlayer.PAUSED ? R.string.ai_resume
+                                : R.string.ai_listen));
+            }
+            if (st == TtsPlayer.IDLE) clearHighlight();
+        }
+
+        @Override public void onWord(int start, int end) {
+            clearHighlight();
+            if (start < 0) return;
+            for (int i = 0; i < views.size(); i++) {
+                TextView t = views.get(i);
+                int off = offs.get(i);
+                CharSequence cs = t.getText();
+                if (start >= off && start < off + cs.length()
+                        && cs instanceof Spannable) {
+                    span = new BackgroundColorSpan(
+                            (Fx.color(AiActivity.this, R.color.home_brand)
+                                    & 0x00FFFFFF) | 0x40000000);
+                    ((Spannable) cs).setSpan(span, start - off,
+                            Math.min(end - off, cs.length()),
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    spanOn = t;
+                    return;
+                }
+            }
+        }
+
+        @Override public void onError(String message) {
+            Ui.toast(AiActivity.this, getString(R.string.ai_tts_failed));
+        }
+
+        void clearHighlight() {
+            if (span != null && spanOn != null) {
+                CharSequence cs = spanOn.getText();
+                if (cs instanceof Spannable) ((Spannable) cs).removeSpan(span);
+            }
+            span = null;
+            spanOn = null;
+        }
     }
 
     /** Bitmap -> raw base64 (the images[] format /api/chat expects). */
@@ -896,7 +1209,7 @@ public class AiActivity extends XdActivity {
                 Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0,
                         bytes.length);
                 if (bmp != null) {
-                    showFullImage(bmp);
+                    showImageViewer(bmp, null, f.name);
                     return;
                 }
             } catch (Throwable ignored) {}
@@ -1052,22 +1365,185 @@ public class AiActivity extends XdActivity {
         return t;
     }
 
-    /** Fullscreen image — tap the picture or the ✕ to exit. */
+    /** Fullscreen image (older call sites): the same viewer, no file. */
     private void showFullImage(Bitmap bmp) {
+        showImageViewer(bmp, null, null);
+    }
+
+    /** Step 5: fullscreen image viewer — ✕ top-left; Download + a white
+     *  Share pill top-right (Claude-app layout). Tap the picture to hide
+     *  or show the bars. {@code src} (optional) is the original file so
+     *  Download keeps full quality; otherwise the bitmap is re-encoded. */
+    private void showImageViewer(final Bitmap bmp, final File src,
+                                 final String name) {
         if (bmp == null || isFinishing()) return;
+        final float dp = getResources().getDisplayMetrics().density;
         final Dialog d = fullDialog();
         FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+
         ImageView img = new ImageView(this);
         img.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         img.setScaleType(ImageView.ScaleType.FIT_CENTER);
         img.setImageBitmap(bmp);
-        img.setOnClickListener(v -> d.dismiss());
         root.addView(img);
-        root.addView(cross(d::dismiss));
+
+        int sbId = getResources().getIdentifier(
+                "status_bar_height", "dimen", "android");
+        int sb = sbId > 0 ? getResources().getDimensionPixelSize(sbId) : 0;
+
+        final LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding((int) (14 * dp), sb + (int) (10 * dp),
+                (int) (14 * dp), (int) (10 * dp));
+        bar.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
+
+        bar.addView(viewerCircle(R.drawable.ic_close,
+                getString(R.string.ai_viewer_close_cd), d::dismiss));
+
+        View spacer = new View(this);
+        spacer.setLayoutParams(new LinearLayout.LayoutParams(
+                0, 1, 1f));
+        bar.addView(spacer);
+
+        View dl = viewerCircle(R.drawable.ic_download,
+                getString(R.string.ai_viewer_download_cd),
+                () -> saveImageToPictures(bmp, src, name));
+        ((LinearLayout.LayoutParams) dl.getLayoutParams()).rightMargin =
+                (int) (8 * dp);
+        bar.addView(dl);
+
+        TextView share = new TextView(this);
+        share.setText(R.string.ai_viewer_share);
+        share.setTextSize(15);
+        share.setTypeface(Typefaces.interMedium(this));
+        share.setTextColor(Color.BLACK);
+        share.setGravity(Gravity.CENTER);
+        share.setBackgroundResource(R.drawable.viewer_share_bg);
+        share.setPadding((int) (22 * dp), 0, (int) (22 * dp), 0);
+        share.setClickable(true);
+        share.setOnClickListener(v -> shareImage(bmp, src, name));
+        bar.addView(share, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, (int) (44 * dp)));
+        root.addView(bar);
+
+        img.setOnClickListener(v -> bar.setVisibility(
+                bar.getVisibility() == View.VISIBLE
+                        ? View.GONE : View.VISIBLE));
         d.setContentView(root);
         d.show();
+    }
+
+    /** A 44dp dark round icon button for the image viewer's top bar. */
+    private View viewerCircle(int iconRes, String cd, final Runnable go) {
+        float dp = getResources().getDisplayMetrics().density;
+        FrameLayout b = new FrameLayout(this);
+        b.setLayoutParams(new LinearLayout.LayoutParams(
+                (int) (44 * dp), (int) (44 * dp)));
+        b.setBackgroundResource(R.drawable.viewer_btn_bg);
+        b.setClickable(true);
+        b.setContentDescription(cd);
+        ImageView ic = new ImageView(this);
+        ic.setLayoutParams(new FrameLayout.LayoutParams(
+                (int) (20 * dp), (int) (20 * dp), Gravity.CENTER));
+        ic.setImageResource(iconRes);
+        ic.setColorFilter(Color.WHITE);
+        b.addView(ic);
+        b.setOnClickListener(v -> go.run());
+        return b;
+    }
+
+    /** Bytes to save/share: the original file when we have one, else the
+     *  bitmap re-encoded (PNG for .png names, JPEG otherwise). */
+    private byte[] imageBytes(Bitmap bmp, File src, String name) {
+        try {
+            if (src != null && src.exists()) {
+                java.io.FileInputStream in = new java.io.FileInputStream(src);
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+                in.close();
+                return bos.toByteArray();
+            }
+        } catch (Throwable ignored) {}
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        boolean png = name != null
+                && name.toLowerCase(Locale.ROOT).endsWith(".png");
+        bmp.compress(png ? Bitmap.CompressFormat.PNG
+                : Bitmap.CompressFormat.JPEG, 95, bos);
+        return bos.toByteArray();
+    }
+
+    private static String imageMimeOf(String name) {
+        String n = name == null ? "" : name.toLowerCase(Locale.ROOT);
+        return n.endsWith(".png") ? "image/png" : "image/jpeg";
+    }
+
+    /** A friendly file name for a saved / shared image. */
+    private static String imageFileName(String name) {
+        boolean png = name != null
+                && name.toLowerCase(Locale.ROOT).endsWith(".png");
+        return "XavierAI_" + System.currentTimeMillis()
+                + (png ? ".png" : ".jpg");
+    }
+
+    /** Download button: save into Pictures/XavierDrive. */
+    private void saveImageToPictures(final Bitmap bmp, final File src,
+                                     final String name) {
+        new Thread(() -> {
+            String where = null, err = null;
+            try {
+                byte[] data = imageBytes(bmp, src, name);
+                where = Ui.saveToPictures(AiActivity.this, data,
+                        imageFileName(name), imageMimeOf(name));
+            } catch (Throwable t) {
+                err = t.getMessage() == null ? String.valueOf(t)
+                        : t.getMessage();
+            }
+            final String w = where, e = err;
+            h.post(() -> {
+                if (isFinishing()) return;
+                if (e != null) {
+                    Ui.toast(AiActivity.this,
+                            getString(R.string.ai_viewer_save_failed));
+                } else {
+                    Ui.toast(AiActivity.this,
+                            getString(R.string.ai_viewer_saved, w));
+                }
+            });
+        }, "xd-img-save").start();
+    }
+
+    /** Share button: write a temp copy in cache/aiimg (already exposed by
+     *  the FileProvider — generated images open from there) and hand it
+     *  to the system share sheet. */
+    private void shareImage(final Bitmap bmp, final File src,
+                            final String name) {
+        try {
+            File dir = new File(getCacheDir(), "aiimg");
+            if (!dir.exists()) dir.mkdirs();
+            File out = new File(dir, imageFileName(name));
+            FileOutputStream fo = new FileOutputStream(out);
+            fo.write(imageBytes(bmp, src, name));
+            fo.close();
+            Uri uri = androidx.core.content.FileProvider.getUriForFile(this,
+                    getPackageName() + ".files", out);
+            Intent i = new Intent(Intent.ACTION_SEND);
+            i.setType(imageMimeOf(name));
+            i.putExtra(Intent.EXTRA_STREAM, uri);
+            i.setClipData(ClipData.newRawUri("", uri));
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(i,
+                    getString(R.string.ai_viewer_share)));
+        } catch (Throwable t) {
+            Ui.toast(this, getString(R.string.ai_viewer_share_failed));
+        }
     }
 
     /** Fullscreen HTML — rendered in a WebView, like the website. */
@@ -1078,10 +1554,46 @@ public class AiActivity extends XdActivity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.addView(previewTitle(name));
         WebView wv = new WebView(this);
-        wv.getSettings().setJavaScriptEnabled(true);
-        wv.getSettings().setDomStorageEnabled(false);
+        // SECURITY: this renders HTML written by the AI (and therefore by
+        // whatever a student typed into the prompt). JS stays on so
+        // interactive pages work, but the page is sealed in a sandbox:
+        // no network of any kind, no file/content access, no popups, no
+        // navigation, no JS bridges. Even a page carrying a malicious
+        // script cannot read anything or send anything anywhere.
+        WebSettings ws = wv.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setDomStorageEnabled(false);
+        ws.setAllowFileAccess(false);
+        ws.setAllowContentAccess(false);
+        ws.setAllowFileAccessFromFileURLs(false);
+        ws.setAllowUniversalAccessFromFileURLs(false);
+        ws.setJavaScriptCanOpenWindowsAutomatically(false);
+        ws.setSupportMultipleWindows(false);
+        ws.setGeolocationEnabled(false);
+        ws.setBlockNetworkLoads(true);
+        ws.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        wv.setWebViewClient(new WebViewClient() {
+            @Override public boolean shouldOverrideUrlLoading(
+                    WebView view, WebResourceRequest request) {
+                return true;                      // never navigate away
+            }
+            @Override public WebResourceResponse shouldInterceptRequest(
+                    WebView view, WebResourceRequest request) {
+                String u = request.getUrl().toString();
+                if (u.startsWith("data:") || u.startsWith("about:")) return null;
+                return new WebResourceResponse("text/plain", "UTF-8",
+                        new java.io.ByteArrayInputStream(new byte[0]));
+            }
+        });
         wv.setBackgroundColor(android.graphics.Color.WHITE);
-        wv.loadDataWithBaseURL(null, html == null ? "" : html,
+        // Content-Security-Policy first in the document: nothing may load
+        // or connect except inline style/script and data: images/fonts
+        final String csp = "<meta http-equiv=\"Content-Security-Policy\" "
+                + "content=\"default-src 'none'; style-src 'unsafe-inline'; "
+                + "script-src 'unsafe-inline'; img-src data:; font-src data:; "
+                + "media-src data:; form-action 'none'; base-uri 'none'; "
+                + "frame-src 'none'\">";
+        wv.loadDataWithBaseURL(null, csp + (html == null ? "" : html),
                 "text/html", "UTF-8", null);
         root.addView(wv, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -1181,6 +1693,19 @@ public class AiActivity extends XdActivity {
         if (imm != null) imm.showSoftInput(input, 0);
     }
 
+    /** step 8: "12/30 today" — the server reports the used/limit pair on
+     *  every answer (JSON response or the stream's done event). */
+    private void showQuota(int used, int limit) {
+        if (quotaView == null || limit <= 0) return;
+        try {
+            quotaView.setText(getString(R.string.ai_quota_today,
+                    Math.min(used, limit), limit));
+            quotaView.setVisibility(View.VISIBLE);
+            quotaView.setTextColor(Fx.color(this, used >= limit
+                    ? R.color.danger : R.color.home_muted));
+        } catch (Throwable ignored) {}
+    }
+
     /** GREY when there is nothing to send, BLUE the moment there is. */
     private void refreshSendUi() {
         boolean ready = input.getText().toString().trim().length() > 0
@@ -1189,7 +1714,7 @@ public class AiActivity extends XdActivity {
                 ? R.drawable.ai_send_ready : R.drawable.ai_send_idle);
         ((ImageView) sendIcon).setColorFilter(ready
                 ? Color.WHITE
-                : Fx.color(this, R.color.home_tile_ink));
+                : Fx.color(this, R.color.home_muted));
     }
 
     private float composedFontSize() {
@@ -1349,25 +1874,80 @@ public class AiActivity extends XdActivity {
                                final boolean saveAfter,
                                final boolean firstExchange) {
         new Thread(() -> {
-            ApiClient.Resp r = ApiClient.requestJson("POST", "/api/chat",
-                    body);
             String answer = null, err = null;
-            if (r.ok && r.json != null) {
-                answer = r.json.optString("response", "");
-                if (answer.isEmpty()) err = getString(R.string.ai_error);
-                if (r.json.optBoolean("quotaExhausted", false)) {
-                    answer = getString(R.string.ai_quota_warn) + "\n\n"
-                            + answer;
-                }
-            } else if (r.code == 429) {
-                err = r.error();
+            // step 6: stream typed agentic events (steps / summaries /
+            // artifacts / text). If the stream gives nothing, fall back to
+            // the plain JSON endpoint — same as the website. When the stream
+            // FAILED EXPLICITLY (an error event) we do NOT fall back: the
+            // failed request's quota was already refunded, and retrying
+            // here would silently charge the message a second time.
+            final StringBuilder streamed = new StringBuilder();
+            final String[] streamErr = {null};
+            final int[] quotaUsed = {-1}, quotaLimit = {-1};
+            try { body.put("agentic", true); } catch (Throwable ignored) {}
+            ApiClient.Resp sr = ApiClient.streamSse("/api/chat/stream", body,
+                    ev -> {
+                        final String t = ev.optString("t", "");
+                        if ("text".equals(t)) {
+                            streamed.append(ev.optString("delta", ""));
+                        } else if ("done".equals(t)) {
+                            if (ev.has("quotaLimit")) {
+                                quotaUsed[0] = ev.optInt("quotaUsed", -1);
+                                quotaLimit[0] = ev.optInt("quotaLimit", -1);
+                            }
+                        } else if ("error".equals(t)) {
+                            if (streamErr[0] == null) {
+                                streamErr[0] = ev.optString("error",
+                                        "AI service temporarily unavailable");
+                            }
+                        } else if ("step".equals(t) || "summary".equals(t)
+                                || "artifact".equals(t)) {
+                            h.post(() -> onAgentEvent(sid, ev));
+                        }
+                    });
+            try { body.remove("agentic"); } catch (Throwable ignored) {}
+
+            if (streamed.length() > 0) {
+                answer = streamed.toString();
+            } else if (streamErr[0] != null) {
+                err = streamErr[0];
+            } else if (sr.code == 429) {
+                err = sr.error();
             } else {
-                err = r.error().isEmpty()
-                        ? getString(R.string.ai_error) : r.error();
+                ApiClient.Resp r = ApiClient.requestJson("POST", "/api/chat",
+                        body);
+                if (r.ok && r.json != null) {
+                    answer = r.json.optString("response", "");
+                    if (answer.isEmpty()) {
+                        answer = null;
+                        err = getString(R.string.ai_error);
+                    }
+                    if (r.json.has("quotaLimit")) {
+                        quotaUsed[0] = r.json.optInt("quotaUsed", -1);
+                        quotaLimit[0] = r.json.optInt("quotaLimit", -1);
+                    }
+                    if (answer != null
+                            && r.json.optBoolean("quotaExhausted", false)) {
+                        answer = getString(R.string.ai_quota_warn) + "\n\n"
+                                + answer;
+                    }
+                } else if (r.code == 429) {
+                    err = r.error();
+                } else {
+                    err = r.error().isEmpty()
+                            ? getString(R.string.ai_error) : r.error();
+                }
             }
             final String ans = answer, e = err;
+            final int qUsed = quotaUsed[0], qLimit = quotaLimit[0];
             h.post(() -> {
                 if (isFinishing()) return;
+                if (qLimit > 0 && qUsed >= 0) showQuota(qUsed, qLimit);
+                // step 6: keep the trail as a collapsed "N steps" chip
+                final List<String[]> trailSnap = agentTrail == null
+                        ? null : agentTrail.snapshot();
+                if (agentTrail != null) agentTrail.stop();
+                agentTrail = null;
                 hideTyping();
                 busy = false;
                 input.setEnabled(true);
@@ -1379,6 +1959,14 @@ public class AiActivity extends XdActivity {
                     if (showing) {
                         appendBubble("ai", ans, t, null,
                                 histOf(sid).length() - 1, true);
+                        if (AgentTrail.worthKeeping(trailSnap)
+                                && msgs.getChildCount() > 0
+                                && msgs.getChildAt(msgs.getChildCount() - 1)
+                                        instanceof LinearLayout) {
+                            ((LinearLayout) msgs.getChildAt(
+                                    msgs.getChildCount() - 1)).addView(
+                                    AgentTrail.collapsed(this, trailSnap), 0);
+                        }
                     }
                     // v1.1.5: AI-created files (```file blocks) are stored
                     // into the chat's artifacts folder — its workspace
@@ -1500,6 +2088,14 @@ public class AiActivity extends XdActivity {
             if (st.klass != null && !st.klass.isEmpty()) {
                 body.put("class", st.klass);
             }
+            // the regenerated answer knows the chat's workspace too — same
+            // context as send() (step 8 consistency fix)
+            ChatSync.Session regS = findSession(currentId);
+            if (regS != null && !regS.ws.isEmpty()) {
+                JSONArray ws = new JSONArray();
+                for (String wn : regS.ws) ws.put(wn);
+                body.put("workspace", ws);
+            }
             JSONArray histOut = new JSONArray();
             // everything before the user message being re-asked
             int from = Math.max(0, kept.length() - 1 - 30);
@@ -1520,7 +2116,7 @@ public class AiActivity extends XdActivity {
     // ═════════════════════════════════════ image generation ════════════
 
     /** Pollinations picture, exactly like the website's generator.
-     *  Admins + developers only (owner order v1.2.0). */
+     *  Available to everyone (owner order v1.1.7 — students too). */
     private void generateImage(final String prompt) {
         busy = true;
         input.setEnabled(false);
@@ -1635,6 +2231,35 @@ public class AiActivity extends XdActivity {
 
     // ═════════════════════════════════════ typing indicator ════════════
 
+    /** Step 6: one typed event from the stream, on the UI thread. Builds
+     *  the live action rows inside the typing row (replacing the cycling
+     *  "Thinking…" label). Ignored when that chat is no longer on screen. */
+    private void onAgentEvent(String sid, JSONObject ev) {
+        if (isFinishing() || typingRow == null || !sid.equals(currentId)) {
+            return;
+        }
+        LinearLayout body = typingRow.findViewById(R.id.bubble_body);
+        if (body == null) return;
+        if (agentTrail == null) {
+            h.removeCallbacks(thinkCycle);
+            View label = typingRow.findViewById(R.id.bubble_text);
+            if (label != null) label.setVisibility(View.GONE);
+            body.setVisibility(View.VISIBLE);
+            agentTrail = new AgentTrail(this, body);
+        }
+        String t = ev.optString("t", "");
+        if ("step".equals(t)) {
+            agentTrail.step(ev.optInt("id", 0), ev.optString("title", ""),
+                    ev.optString("detail", ""),
+                    ev.optString("status", "running"));
+        } else if ("summary".equals(t)) {
+            agentTrail.summary(ev.optString("text", ""));
+        } else if ("artifact".equals(t)) {
+            agentTrail.artifact(ev.optString("name", "file"));
+        }
+        scrollDown();
+    }
+
     private void showTyping() {
         showTyping(THINKING[0]);
     }
@@ -1661,6 +2286,7 @@ public class AiActivity extends XdActivity {
 
     private void hideTyping() {
         h.removeCallbacks(thinkCycle);
+        if (agentTrail != null) { agentTrail.stop(); agentTrail = null; }
         if (typingRow != null) {
             try { msgs.removeView(typingRow); } catch (Throwable ignored) {}
             typingRow = null;
@@ -1674,27 +2300,43 @@ public class AiActivity extends XdActivity {
     // ═════════════════════════════════════ the plus menu ═══════════════
 
     /** The ChatGPT-style small menu: Camera · Photos · Files · Image
-     *  (admins + developers only) · Deep research. NOT focusable — the
+     *  (EVERYONE — owner order v1.1.7) · Deep research. NOT focusable — the
      *  keyboard stays open (the v1.1.2 popup stole focus and the
      *  keyboard visibly closed and reopened; owner-reported glitch). */
+    /** v1.1.7: the + menu is a bottom sheet (icon tile + title +
+     *  subtitle per row), like the Claude app. */
     private void showPlusMenu() {
         if (plusMenu != null) {
             try { plusMenu.dismiss(); } catch (Throwable ignored) {}
             plusMenu = null;
         }
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        float dp = getResources().getDisplayMetrics().density;
-        box.setBackground(getResources().getDrawable(R.drawable.dialog_bg));
-        box.setElevation(10 * dp);
+        final float dp = getResources().getDisplayMetrics().density;
+        final Dialog d = new Dialog(this);
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
 
-        boolean power = st.adminPower();
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setBackgroundResource(R.drawable.sheet_bg);
+        sheet.setPadding(0, (int) (10 * dp), 0, (int) (18 * dp));
+
+        View handle = new View(this);
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(
+                (int) (40 * dp), (int) (5 * dp));
+        hp.gravity = Gravity.CENTER_HORIZONTAL;
+        hp.bottomMargin = (int) (10 * dp);
+        handle.setLayoutParams(hp);
+        handle.setBackgroundResource(R.drawable.sheet_handle);
+        sheet.addView(handle);
+
         int icons[] = {R.drawable.ic_camera, R.drawable.ic_image,
                 R.drawable.ic_file, R.drawable.ic_sparkle,
                 R.drawable.ic_search};
         int labels[] = {R.string.ai_menu_camera, R.string.ai_menu_photos,
                 R.string.ai_menu_files, R.string.ai_menu_image,
                 R.string.ai_menu_research};
+        int subs[] = {R.string.ai_sheet_camera_sub,
+                R.string.ai_sheet_photos_sub, R.string.ai_sheet_files_sub,
+                R.string.ai_sheet_image_sub, R.string.ai_sheet_research_sub};
         final Runnable actions[] = {
                 () -> pickFromCamera(),
                 () -> pickPhotos(),
@@ -1713,61 +2355,86 @@ public class AiActivity extends XdActivity {
         };
 
         for (int i = 0; i < labels.length; i++) {
-            if (i == 3 && !power) continue;   // Generate image: admins/devs
+            // v1.1.7 (owner order): Generate image is available to students
+            // too — no power gate anymore.
             final int idx = i;
+            boolean active = (idx == 3 && imageMode)
+                    || (idx == 4 && deepResearch);
+
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding((int) (16 * dp), (int) (11 * dp),
-                    (int) (16 * dp), (int) (11 * dp));
+            row.setPadding((int) (20 * dp), (int) (10 * dp),
+                    (int) (20 * dp), (int) (10 * dp));
+            row.setBackground(getResources()
+                    .getDrawable(R.drawable.home_ripple_circle));
+
+            FrameLayout tile = new FrameLayout(this);
+            tile.setBackgroundResource(R.drawable.sheet_icon_bg);
+            row.addView(tile, new LinearLayout.LayoutParams(
+                    (int) (44 * dp), (int) (44 * dp)));
             ImageView ic = new ImageView(this);
-            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
-                    (int) (19 * dp), (int) (19 * dp));
-            ic.setLayoutParams(ip);
             ic.setImageResource(icons[i]);
-            ic.setColorFilter(Fx.color(this, idx == 3 && imageMode
-                    ? R.color.home_brand : R.color.home_muted));
-            row.addView(ic);
+            ic.setColorFilter(Fx.color(this, active
+                    ? R.color.home_brand : R.color.home_tile_ink));
+            tile.addView(ic, new FrameLayout.LayoutParams(
+                    (int) (22 * dp), (int) (22 * dp), Gravity.CENTER));
+
+            LinearLayout col = new LinearLayout(this);
+            col.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            cp.leftMargin = (int) (14 * dp);
+            row.addView(col, cp);
+
             TextView label = new TextView(this);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.leftMargin = (int) (12 * dp);
-            label.setLayoutParams(lp);
             label.setText(labels[i]);
-            label.setTextSize(14);
+            label.setTextSize(15.5f);
             label.setTypeface(Typefaces.interMedium(this));
             label.setTextColor(Fx.color(this, R.color.home_ink));
-            row.addView(label);
+            col.addView(label);
+
+            TextView sub = new TextView(this);
+            sub.setText(subs[i]);
+            sub.setTextSize(12.5f);
+            sub.setTextColor(Fx.color(this, R.color.home_muted));
+            col.addView(sub);
+
+            if (active) {
+                ImageView tick = new ImageView(this);
+                tick.setImageResource(R.drawable.ic_check);
+                tick.setColorFilter(Fx.color(this, R.color.home_brand));
+                row.addView(tick, new LinearLayout.LayoutParams(
+                        (int) (22 * dp), (int) (22 * dp)));
+            }
+
             row.setOnClickListener(v -> {
-                if (plusMenu != null) {
-                    try { plusMenu.dismiss(); } catch (Throwable ignored) {}
-                    plusMenu = null;
-                }
+                d.dismiss();
                 actions[idx].run();
             });
-            box.addView(row);
+            sheet.addView(row);
         }
 
-        PopupWindow pop = new PopupWindow(box,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT, false);
-        // focusable=false: the keyboard that is already open STAYS open
-        pop.setOutsideTouchable(true);
-        pop.setElevation(10 * dp);
-        pop.setBackgroundDrawable(getResources()
-                .getDrawable(R.drawable.dialog_bg));
-        // the composer sits at the BOTTOM of the screen — the menu must
-        // open ABOVE the plus button (measure first, then offset up)
-        box.measure(View.MeasureSpec.UNSPECIFIED,
-                View.MeasureSpec.UNSPECIFIED);
-        int up = box.getMeasuredHeight() + (int) (12 * dp);
-        pop.showAsDropDown(findViewById(R.id.ai_plus), 0, -up,
-                Gravity.TOP | Gravity.START);
-        plusMenu = pop;
+        d.setContentView(sheet);
+        android.view.Window win = d.getWindow();
+        if (win != null) {
+            win.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            win.setGravity(Gravity.BOTTOM);
+            win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            win.setDimAmount(0.42f);
+            win.addFlags(android.view.WindowManager.LayoutParams
+                    .FLAG_DIM_BEHIND);
+            win.getAttributes().windowAnimations =
+                    android.R.style.Animation_InputMethod;
+        }
+        d.setCanceledOnTouchOutside(true);
+        d.setOnDismissListener(x -> plusMenu = null);
+        plusMenu = d;
+        d.show();
     }
 
-    private PopupWindow plusMenu;
+    private Dialog plusMenu;
 
     private void refreshModeStrip() {
         boolean any = deepResearch || imageMode;
@@ -1965,6 +2632,10 @@ public class AiActivity extends XdActivity {
         return name;
     }
 
+    /** Step 5: composer attachments = a horizontal row of 64dp rounded
+     *  square tiles (Claude-app style). A new one is appended on the
+     *  right and scrolled into view; each has a ✕ badge top-right. Tap a
+     *  photo → fullscreen viewer; tap a document tile → text preview. */
     private void refreshAttachStrip() {
         attachRow.removeAllViews();
         if (attach.isEmpty()) {
@@ -1973,21 +2644,15 @@ public class AiActivity extends XdActivity {
             return;
         }
         attachStrip.setVisibility(View.VISIBLE);
-        float dp = getResources().getDisplayMetrics().density;
+        final float dp = getResources().getDisplayMetrics().density;
         for (final Att a : attach) {
-            if (a.image && a.bmp != null) {
-                // v1.1.5 (owner order, Claude-style): uploaded PHOTOS show
-                // as small SQUARE PREVIEWS instead of a file-name chip —
-                // the next photo sits to the right of the previous one.
-                // Tap the square → fullscreen; the little ✕ at its top
-                // corner removes it from the upload.
-                FrameLayout sq = new FrameLayout(this);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        (int) (62 * dp), (int) (62 * dp));
-                lp.rightMargin = (int) (9 * dp);
-                lp.gravity = Gravity.CENTER_VERTICAL;
-                sq.setLayoutParams(lp);
+            FrameLayout sq = new FrameLayout(this);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    (int) (64 * dp), (int) (64 * dp));
+            lp.rightMargin = (int) (8 * dp);
+            sq.setLayoutParams(lp);
 
+            if (a.image && a.bmp != null) {
                 ImageView img = new ImageView(this);
                 img.setLayoutParams(new FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1996,79 +2661,91 @@ public class AiActivity extends XdActivity {
                 img.setImageBitmap(a.bmp);
                 android.graphics.drawable.GradientDrawable thumb =
                         new android.graphics.drawable.GradientDrawable();
-                thumb.setCornerRadius(12 * dp);
+                thumb.setCornerRadius(14 * dp);
                 thumb.setColor(Fx.color(this, R.color.home_tile_ink));
                 img.setBackground(thumb);
                 img.setClipToOutline(true);
+                img.setOnClickListener(v ->
+                        showImageViewer(a.bmp, null, a.name));
                 sq.addView(img);
-
-                // the ✕ — round scrim so it reads on any photo
-                FrameLayout x = new FrameLayout(this);
-                FrameLayout.LayoutParams xp = new FrameLayout.LayoutParams(
-                        (int) (19 * dp), (int) (19 * dp),
-                        Gravity.TOP | Gravity.END);
-                x.setLayoutParams(xp);
-                x.setBackgroundResource(R.drawable.att_remove_bg);
-                ImageView xi = new ImageView(this);
-                xi.setLayoutParams(new FrameLayout.LayoutParams(
-                        (int) (9 * dp), (int) (9 * dp), Gravity.CENTER));
-                xi.setImageResource(R.drawable.ic_close);
-                xi.setColorFilter(Color.WHITE);
-                x.addView(xi);
-                sq.addView(x);
-
-                // tap the photo → fullscreen preview (owner order);
-                // tap the ✕ → drop it from the upload
-                img.setOnClickListener(v -> showFullImage(a.bmp));
-                x.setOnClickListener(v -> {
-                    attach.remove(a);
-                    refreshAttachStrip();
-                });
-                attachRow.addView(sq);
             } else {
-                // documents keep the compact chip (nothing to preview)
-                LinearLayout chip = new LinearLayout(this);
-                chip.setOrientation(LinearLayout.HORIZONTAL);
-                chip.setGravity(Gravity.CENTER_VERTICAL);
-                chip.setPadding((int) (10 * dp), (int) (6 * dp),
-                        (int) (8 * dp), (int) (6 * dp));
-                chip.setBackground(getResources()
-                        .getDrawable(R.drawable.chip_off));
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.rightMargin = (int) (8 * dp);
-                lp.gravity = Gravity.CENTER_VERTICAL;
-                chip.setLayoutParams(lp);
+                // document tile: icon + extension + (short) name
+                LinearLayout tile = new LinearLayout(this);
+                tile.setOrientation(LinearLayout.VERTICAL);
+                tile.setGravity(Gravity.CENTER);
+                tile.setLayoutParams(new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+                tile.setBackgroundResource(R.drawable.att_tile_bg);
+                tile.setPadding((int) (6 * dp), (int) (6 * dp),
+                        (int) (6 * dp), (int) (6 * dp));
 
                 ImageView ic = new ImageView(this);
                 ic.setLayoutParams(new LinearLayout.LayoutParams(
-                        (int) (15 * dp), (int) (15 * dp)));
+                        (int) (22 * dp), (int) (22 * dp)));
                 ic.setImageResource(R.drawable.ic_file);
                 ic.setColorFilter(Fx.color(this, R.color.home_muted));
-                chip.addView(ic);
+                tile.addView(ic);
 
-                TextView t = new TextView(this);
-                LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                tp.leftMargin = (int) (6 * dp);
-                t.setLayoutParams(tp);
-                t.setText(a.name);
-                t.setTextSize(12);
-                t.setTypeface(Typefaces.interMedium(this));
-                t.setTextColor(Fx.color(this, R.color.home_ink));
-                t.setMaxLines(1);
-                t.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-                chip.addView(t);
+                String nm = a.name == null ? "" : a.name;
+                int dot = nm.lastIndexOf('.');
+                String ext = dot >= 0 && dot < nm.length() - 1
+                        ? nm.substring(dot + 1).toUpperCase(Locale.ROOT)
+                        : "FILE";
+                if (ext.length() > 4) ext = ext.substring(0, 4);
+                TextView et = new TextView(this);
+                et.setText(ext);
+                et.setTextSize(10);
+                et.setTypeface(Typefaces.interMedium(this));
+                et.setTextColor(Fx.color(this, R.color.home_ink));
+                et.setSingleLine(true);
+                et.setGravity(Gravity.CENTER);
+                tile.addView(et);
 
-                chip.setOnClickListener(v -> {
-                    attach.remove(a);
-                    refreshAttachStrip();
-                });
-                attachRow.addView(chip);
+                TextView nt = new TextView(this);
+                nt.setText(nm);
+                nt.setTextSize(9);
+                nt.setTypeface(Typefaces.interRegular(this));
+                nt.setTextColor(Fx.color(this, R.color.home_muted));
+                nt.setSingleLine(true);
+                nt.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+                nt.setGravity(Gravity.CENTER);
+                tile.addView(nt);
+
+                tile.setOnClickListener(v ->
+                        showTextPreview(a.name, a.text));
+                sq.addView(tile);
             }
+
+            // the ✕ badge — top-right, inset so the scroll view never clips it
+            FrameLayout x = new FrameLayout(this);
+            FrameLayout.LayoutParams xp = new FrameLayout.LayoutParams(
+                    (int) (22 * dp), (int) (22 * dp),
+                    Gravity.TOP | Gravity.END);
+            xp.topMargin = xp.rightMargin = (int) (4 * dp);
+            x.setLayoutParams(xp);
+            x.setBackgroundResource(R.drawable.att_badge_bg);
+            x.setContentDescription(getString(R.string.ai_att_remove_cd));
+            ImageView xi = new ImageView(this);
+            xi.setLayoutParams(new FrameLayout.LayoutParams(
+                    (int) (10 * dp), (int) (10 * dp), Gravity.CENTER));
+            xi.setImageResource(R.drawable.ic_close);
+            xi.setColorFilter(Color.WHITE);
+            x.addView(xi);
+            x.setOnClickListener(v -> {
+                attach.remove(a);
+                refreshAttachStrip();
+            });
+            sq.addView(x);
+            attachRow.addView(sq);
         }
+        // a freshly added tile sits on the right — bring it into view
+        attachStrip.post(() -> {
+            if (attachStrip instanceof HorizontalScrollView) {
+                ((HorizontalScrollView) attachStrip)
+                        .fullScroll(View.FOCUS_RIGHT);
+            }
+        });
         refreshSendUi();
     }
 
@@ -2108,13 +2785,28 @@ public class AiActivity extends XdActivity {
         if (voiceInput == null) {
             voiceInput = new VoiceInput(this, new VoiceInput.Events() {
                 @Override public void onListening() {
+                    voiceInserted = "";
                     setListeningUi(true);
                 }
                 @Override public void onText(String text, boolean isFinal) {
-                    if (text != null && !text.isEmpty()) {
-                        input.setText(text);
-                        input.setSelection(input.getText().length());
+                    if (text == null || text.trim().isEmpty()) return;
+                    // dictation is APPENDED to whatever is in the box
+                    // right now (including text typed while recording);
+                    // only the previous partial from this session is
+                    // swapped out - the user's own text is never lost
+                    String cur = input.getText().toString();
+                    if (!voiceInserted.isEmpty()
+                            && cur.endsWith(voiceInserted)) {
+                        cur = cur.substring(0,
+                                cur.length() - voiceInserted.length());
                     }
+                    boolean glue = !cur.isEmpty()
+                            && !Character.isWhitespace(
+                                    cur.charAt(cur.length() - 1));
+                    String add = text.trim();
+                    input.setText(cur + (glue ? " " : "") + add);
+                    input.setSelection(input.getText().length());
+                    voiceInserted = isFinal ? "" : add;
                 }
                 @Override public void onDone() {
                     setListeningUi(false);
@@ -2124,6 +2816,8 @@ public class AiActivity extends XdActivity {
         voiceInput.start();
     }
 
+    private String voiceInserted = "";
+    private WaveformView micWave;
     private Runnable micPulse;
 
     /** Plain mic by default; BLUE with a waveform + gentle pulse while
@@ -2135,8 +2829,16 @@ public class AiActivity extends XdActivity {
             micPulse = null;
         }
         if (on) {
-            micIcon.setImageResource(R.drawable.ic_audio);
-            micIcon.setColorFilter(Color.WHITE);
+            micIcon.setVisibility(View.INVISIBLE);
+            if (micWave == null) {
+                micWave = new WaveformView(this);
+                float d = getResources().getDisplayMetrics().density;
+                FrameLayout.LayoutParams wp = new FrameLayout.LayoutParams(
+                        (int) (20 * d), (int) (18 * d), Gravity.CENTER);
+                ((FrameLayout) micBtn).addView(micWave, wp);
+            }
+            micWave.setVisibility(View.VISIBLE);
+            micWave.start();
             micBtn.setBackgroundResource(R.drawable.mic_listening_bg);
             input.setHint(R.string.ai_listening);
             micBtn.setScaleX(1f);
@@ -2159,6 +2861,11 @@ public class AiActivity extends XdActivity {
             };
             h.post(micPulse);
         } else {
+            if (micWave != null) {
+                micWave.stop();
+                micWave.setVisibility(View.GONE);
+            }
+            micIcon.setVisibility(View.VISIBLE);
             micIcon.setImageResource(R.drawable.ic_mic);
             micIcon.setColorFilter(Fx.color(this, R.color.home_tile_ink));
             micBtn.setBackgroundResource(0);
@@ -2201,89 +2908,105 @@ public class AiActivity extends XdActivity {
         return false;
     }
 
+    private static final int SEC_PINNED = 0, SEC_TODAY = 1, SEC_YESTERDAY = 2,
+            SEC_WEEK = 3, SEC_OLDER = 4;
+
+    private int sectionOf(ChatSync.Session s) {
+        if (pins.contains(s.id)) return SEC_PINNED;
+        java.util.Calendar now = java.util.Calendar.getInstance();
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.setTimeInMillis(s.created);
+        now.set(java.util.Calendar.HOUR_OF_DAY, 0);
+        now.set(java.util.Calendar.MINUTE, 0);
+        now.set(java.util.Calendar.SECOND, 0);
+        now.set(java.util.Calendar.MILLISECOND, 0);
+        long startToday = now.getTimeInMillis();
+        long day = 24L * 60L * 60L * 1000L;
+        if (s.created <= 0) return SEC_OLDER;
+        if (s.created >= startToday) return SEC_TODAY;
+        if (s.created >= startToday - day) return SEC_YESTERDAY;
+        if (s.created >= startToday - 7 * day) return SEC_WEEK;
+        return SEC_OLDER;
+    }
+
+    private void addSectionHeader(int sec, float dp) {
+        int res = sec == SEC_PINNED ? R.string.ai_section_pinned
+                : sec == SEC_TODAY ? R.string.ai_section_today
+                : sec == SEC_YESTERDAY ? R.string.ai_section_yesterday
+                : sec == SEC_WEEK ? R.string.ai_section_week
+                : R.string.ai_section_older;
+        TextView h2 = new TextView(this);
+        h2.setText(res);
+        h2.setTextSize(11.5f);
+        h2.setAllCaps(true);
+        h2.setLetterSpacing(0.06f);
+        h2.setTypeface(Typefaces.interMedium(this));
+        h2.setTextColor(Fx.color(this, R.color.home_muted));
+        h2.setPadding((int) (12 * dp), (int) (16 * dp),
+                (int) (12 * dp), (int) (6 * dp));
+        drawerList.addView(h2);
+    }
+
     private void rebuildDrawer() {
         if (drawerList == null) return;
         drawerList.removeAllViews();
-        float dp = getResources().getDisplayMetrics().density;
+        final float dp = getResources().getDisplayMetrics().density;
 
         boolean any = false;
+        int lastSec = -1;
+        // sessions is kept sorted (pinned first, then newest); walk it
+        // once and emit a header whenever the section changes
         for (final ChatSync.Session s : sessions) {
             if (s.history.length() == 0) continue;
             if (!matches(s, lastQuery)) continue;
             any = true;
 
+            int sec = sectionOf(s);
+            if (sec != lastSec) {
+                addSectionHeader(sec, dp);
+                lastSec = sec;
+            }
+
+            final boolean active = s.id.equals(currentId);
+
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding((int) (12 * dp), (int) (10 * dp),
-                    (int) (6 * dp), (int) (10 * dp));
+            row.setPadding((int) (12 * dp), 0, (int) (2 * dp), 0);
             LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            rp.topMargin = (int) (4 * dp);
+                    ViewGroup.LayoutParams.MATCH_PARENT, (int) (46 * dp));
+            rp.topMargin = (int) (2 * dp);
             row.setLayoutParams(rp);
-
-            LinearLayout text = new LinearLayout(this);
-            text.setOrientation(LinearLayout.VERTICAL);
-            LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            text.setLayoutParams(tp);
-
-            LinearLayout titleRow = new LinearLayout(this);
-            titleRow.setOrientation(LinearLayout.HORIZONTAL);
-            titleRow.setGravity(Gravity.CENTER_VERTICAL);
-
-            if (pins.contains(s.id)) {
-                ImageView pin = new ImageView(this);
-                pin.setLayoutParams(new LinearLayout.LayoutParams(
-                        (int) (13 * dp), (int) (13 * dp)));
-                pin.setImageResource(R.drawable.ic_pin);
-                pin.setColorFilter(Fx.color(this, R.color.home_brand));
-                LinearLayout.LayoutParams pp = (LinearLayout.LayoutParams)
-                        pin.getLayoutParams();
-                pp.rightMargin = (int) (5 * dp);
-                pin.setLayoutParams(pp);
-                titleRow.addView(pin);
-            }
 
             TextView title = new TextView(this);
             String name = s.name == null || s.name.isEmpty()
                     ? getString(R.string.ai_untitled) : s.name;
             title.setText(name);
-            title.setTextSize(13.5f);
+            title.setTextSize(14.5f);
             title.setTypeface(Typefaces.interMedium(this));
             title.setMaxLines(1);
             title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            final boolean active = s.id.equals(currentId);
             title.setTextColor(Fx.color(this, active
                     ? R.color.home_brand : R.color.home_ink));
-            titleRow.addView(title);
-            text.addView(titleRow);
+            row.addView(title, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            TextView meta = new TextView(this);
-            meta.setText(whenText(s.created) + "  ·  "
-                    + s.history.length() + " "
-                    + getString(R.string.ai_history_messages));
-            meta.setTextSize(11);
-            meta.setTypeface(Typefaces.interRegular(this));
-            meta.setTextColor(Fx.color(this, R.color.home_muted));
-            text.addView(meta);
-            row.addView(text);
+            // the 3-dot: a real 40dp touch target at the far RIGHT
+            FrameLayout dotsBox = new FrameLayout(this);
+            dotsBox.setClickable(true);
+            dotsBox.setFocusable(true);
+            dotsBox.setForeground(getResources()
+                    .getDrawable(R.drawable.home_ripple_circle));
+            dotsBox.setContentDescription(getString(R.string.ai_more_cd));
+            ImageView dots = new ImageView(this);
+            dots.setImageResource(R.drawable.ic_more);
+            dots.setColorFilter(Fx.color(this, R.color.home_muted));
+            dotsBox.addView(dots, new FrameLayout.LayoutParams(
+                    (int) (20 * dp), (int) (20 * dp), Gravity.CENTER));
+            dotsBox.setOnClickListener(v -> showChatMenu(s, v));
+            row.addView(dotsBox, new LinearLayout.LayoutParams(
+                    (int) (40 * dp), (int) (40 * dp)));
 
-            // the 3-dot — every chat gets one (owner order)
-            View dots = new View(this);
-            LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
-                    (int) (18 * dp), (int) (18 * dp));
-            dlp.leftMargin = (int) (4 * dp);
-            dots.setLayoutParams(dlp);
-            dots.setBackground(getResources().getDrawable(R.drawable.ic_more));
-            dots.setBackgroundTintList(android.content.res.ColorStateList
-                    .valueOf(Fx.color(this, R.color.home_muted)));
-            dots.setOnClickListener(v -> showChatMenu(s, v));
-            row.addView(dots);
-
-            // SQUARE corners (owner order: "square instead of rounded
-            // oval"), hairline edge, tonal accent when active
             row.setBackground(getResources().getDrawable(
                     active ? R.drawable.chat_row_on : R.drawable.chat_row_bg));
             row.setOnClickListener(v -> {
@@ -2293,7 +3016,7 @@ public class AiActivity extends XdActivity {
                 renderSession();
             });
             row.setOnLongClickListener(v -> {
-                showChatMenu(s, v);
+                showChatMenu(s, dotsBox);
                 return true;
             });
             drawerList.addView(row);
@@ -2312,69 +3035,95 @@ public class AiActivity extends XdActivity {
         }
     }
 
-    /** Rename · Pin · Summarize · Delete — the per-chat menu. */
+    /** Rename · Pin · Summarize (+ Delete for Teacher/Admin/Developer) —
+     *  the per-chat menu, anchored right under the 3-dot. */
     private void showChatMenu(final ChatSync.Session s, View anchor) {
-        float dp = getResources().getDisplayMetrics().density;
+        if (chatMenu != null) {
+            try { chatMenu.dismiss(); } catch (Throwable ignored) {}
+            chatMenu = null;
+        }
+        final float dp = getResources().getDisplayMetrics().density;
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(getResources().getDrawable(R.drawable.dialog_bg));
-        box.setElevation(10 * dp);
+        box.setPadding(0, (int) (6 * dp), 0, (int) (6 * dp));
 
         final boolean pinned = pins.contains(s.id);
-        int icons[] = {R.drawable.ic_edit, R.drawable.ic_pin,
-                R.drawable.ic_sparkle, R.drawable.ic_trash};
-        int labels[] = {R.string.ai_menu_rename, pinned
-                ? R.string.ai_menu_unpin : R.string.ai_menu_pin,
-                R.string.ai_menu_summarize, R.string.ai_menu_delete};
-        final Runnable actions[] = {
-                () -> askRename(s),
-                () -> {
-                    if (pinned) {
-                        pins.remove(s.id);
-                    } else {
-                        pins.add(s.id);
-                    }
-                    persistCache();
-                    sortSessions();
-                    rebuildDrawer();
-                },
-                () -> {
-                    closeDrawer();
-                    currentId = s.id;
-                    persistCache();
-                    renderSession();
-                    input.setText(getString(
-                            R.string.ai_summarize_prompt));
-                    input.setSelection(input.getText().length());
-                    send();
-                },
-                () -> confirmDeleteSession(s)
-        };
+        // Students never see Delete (server must enforce it too)
+        final boolean canDelete = st.teacherPower();
 
-        for (int i = 0; i < labels.length; i++) {
+        final java.util.ArrayList<Integer> icons = new java.util.ArrayList<>();
+        final java.util.ArrayList<Integer> labels = new java.util.ArrayList<>();
+        final java.util.ArrayList<Runnable> actions = new java.util.ArrayList<>();
+
+        icons.add(R.drawable.ic_edit);
+        labels.add(R.string.ai_menu_rename);
+        actions.add(() -> askRename(s));
+
+        icons.add(R.drawable.ic_pin);
+        labels.add(pinned ? R.string.ai_menu_unpin : R.string.ai_menu_pin);
+        actions.add(() -> {
+            if (pinned) pins.remove(s.id); else pins.add(s.id);
+            persistCache();
+            sortSessions();
+            rebuildDrawer();
+        });
+
+        icons.add(R.drawable.ic_sparkle);
+        labels.add(R.string.ai_menu_summarize);
+        actions.add(() -> {
+            if (busy) {
+                Ui.toast(this, getString(R.string.ai_busy_wait));
+                return;
+            }
+            closeDrawer();
+            currentId = s.id;
+            persistCache();
+            renderSession();
+            input.setText(getString(R.string.ai_summarize_prompt));
+            input.setSelection(input.getText().length());
+            send();
+        });
+
+        if (canDelete) {
+            icons.add(R.drawable.ic_trash);
+            labels.add(R.string.ai_menu_delete);
+            actions.add(() -> confirmDeleteSession(s));
+        }
+
+        for (int i = 0; i < labels.size(); i++) {
             final int idx = i;
+            final boolean danger = canDelete && idx == labels.size() - 1;
+            if (danger) {
+                View div = new View(this);
+                div.setBackgroundColor(Fx.color(this, R.color.home_hairline));
+                LinearLayout.LayoutParams dv = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, (int) dp);
+                dv.topMargin = (int) (4 * dp);
+                dv.bottomMargin = (int) (4 * dp);
+                box.addView(div, dv);
+            }
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding((int) (16 * dp), (int) (11 * dp),
-                    (int) (16 * dp), (int) (11 * dp));
+            row.setPadding((int) (16 * dp), 0, (int) (16 * dp), 0);
+            row.setForeground(getResources()
+                    .getDrawable(R.drawable.home_ripple_circle));
             ImageView ic = new ImageView(this);
-            ic.setLayoutParams(new LinearLayout.LayoutParams(
-                    (int) (17 * dp), (int) (17 * dp)));
-            ic.setImageResource(icons[i]);
-            ic.setColorFilter(Fx.color(this, idx == 3
+            ic.setImageResource(icons.get(i));
+            ic.setColorFilter(Fx.color(this, danger
                     ? R.color.danger : R.color.home_muted));
-            row.addView(ic);
+            row.addView(ic, new LinearLayout.LayoutParams(
+                    (int) (18 * dp), (int) (18 * dp)));
             TextView label = new TextView(this);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.leftMargin = (int) (12 * dp);
+            lp.leftMargin = (int) (14 * dp);
             label.setLayoutParams(lp);
-            label.setText(labels[i]);
-            label.setTextSize(14);
+            label.setText(labels.get(i));
+            label.setTextSize(14.5f);
             label.setTypeface(Typefaces.interMedium(this));
-            label.setTextColor(Fx.color(this, idx == 3
+            label.setTextColor(Fx.color(this, danger
                     ? R.color.danger : R.color.home_ink));
             row.addView(label);
             row.setOnClickListener(v -> {
@@ -2382,19 +3131,33 @@ public class AiActivity extends XdActivity {
                     try { chatMenu.dismiss(); } catch (Throwable ignored) {}
                     chatMenu = null;
                 }
-                actions[idx].run();
+                actions.get(idx).run();
             });
-            box.addView(row);
+            box.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, (int) (46 * dp)));
         }
 
-        PopupWindow pop = new PopupWindow(box,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+        final int popW = (int) (208 * dp);
+        PopupWindow pop = new PopupWindow(box, popW,
                 ViewGroup.LayoutParams.WRAP_CONTENT, true);
         pop.setOutsideTouchable(true);
-        pop.setElevation(10 * dp);
+        pop.setElevation(14 * dp);
         pop.setBackgroundDrawable(getResources()
-                .getDrawable(R.drawable.dialog_bg));
-        pop.showAsDropDown(anchor, -(int) (150 * dp), 0);
+                .getDrawable(R.drawable.popup_menu_bg));
+
+        // right-align under the dots; flip ABOVE when there is no room
+        box.measure(View.MeasureSpec.makeMeasureSpec(popW,
+                        View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.UNSPECIFIED);
+        int popH = box.getMeasuredHeight();
+        int[] loc = new int[2];
+        anchor.getLocationOnScreen(loc);
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        boolean below = loc[1] + anchor.getHeight() + popH
+                < screenH - (int) (16 * dp);
+        int xOff = anchor.getWidth() - popW;
+        int yOff = below ? 0 : -(anchor.getHeight() + popH);
+        pop.showAsDropDown(anchor, xOff, yOff);
         chatMenu = pop;
     }
 
