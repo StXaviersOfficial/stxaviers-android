@@ -23,13 +23,40 @@
         android:textColor="@color/msg_user_ink"
         android:textColorLink="@color/msg_user_ink" />
 
-    <TextView
-        android:id="@+id/bubble_time"
+    <!-- step 4: copy under the user's own message (icon -> tick) + time -->
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="3dp"
-        android:layout_marginRight="4dp"
-        android:textSize="11sp"
-        android:fontFamily="@font/inter_regular"
-        android:textColor="@color/home_muted" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="2dp">
+
+        <FrameLayout
+            android:id="@+id/act_copy"
+            android:layout_width="36dp"
+            android:layout_height="32dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:foreground="@drawable/home_ripple_circle"
+            android:contentDescription="@string/ai_copy">
+
+            <ImageView
+                android:id="@+id/act_copy_icon"
+                android:layout_width="15dp"
+                android:layout_height="15dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_copy"
+                android:tint="@color/home_muted"
+                android:contentDescription="@null" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/bubble_time"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginRight="4dp"
+            android:textSize="11sp"
+            android:fontFamily="@font/inter_regular"
+            android:textColor="@color/home_muted" />
+    </LinearLayout>
 </LinearLayout>
