@@ -67,6 +67,25 @@
                 android:ellipsize="end"
                 android:text="@string/ai_untitled" />
 
+            <!-- step 8: today's AI message quota ("12/30 today") — hidden
+                 until the server reports it -->
+            <TextView
+                android:id="@+id/ai_quota"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginRight="10dp"
+                android:paddingLeft="8dp"
+                android:paddingRight="8dp"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:background="@drawable/notice_chip"
+                android:textSize="10.5sp"
+                android:fontFamily="@font/inter_medium"
+                android:textColor="@color/home_muted"
+                android:maxLines="1"
+                android:visibility="gone"
+                android:contentDescription="@null" />
+
             <!-- cross — exits the AI and returns to the Home tab -->
             <FrameLayout
                 android:id="@+id/ai_close"
@@ -315,8 +334,11 @@
                     android:textColor="@color/home_ink"
                     android:textColorHint="@color/home_muted"
                     android:inputType="textMultiLine|textCapSentences"
-                    android:maxLines="6"
-                    android:imeOptions="actionSend" />
+                    android:minLines="1"
+                    android:maxLines="8"
+                    android:gravity="center_vertical"
+                    android:scrollbars="vertical"
+                    android:imeOptions="flagNoEnterAction" />
 
                 <!-- mic — plain by default; blue + waveform while listening -->
                 <FrameLayout
@@ -348,11 +370,11 @@
 
                     <ImageView
                         android:id="@+id/ai_send_icon"
-                        android:layout_width="18dp"
-                        android:layout_height="18dp"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
                         android:layout_gravity="center"
-                        android:src="@drawable/ic_send"
-                        android:tint="@color/home_tile_ink"
+                        android:src="@drawable/ic_arrow_up"
+                        android:tint="@color/home_muted"
                         android:contentDescription="@null" />
                 </FrameLayout>
             </LinearLayout>
