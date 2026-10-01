@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.1.8: Send button, STOP state — the danger-red circle shown while the
+     AI is working, so the same button that sends also ends the task. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/danger" />
+</shape>
