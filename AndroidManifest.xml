@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.stxaviers.app"
-    android:versionCode="20"
-    android:versionName="1.1.7">
+    android:versionCode="21"
+    android:versionName="1.1.8">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -142,6 +142,12 @@
         <!-- v1.2.0: full-screen AI settings (voice / font / memory / chats) -->
         <activity android:name=".AiSettingsActivity" android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+            android:theme="@style/Theme.XavierDrive.Home" />
+
+        <!-- v1.1.8: bug reports — Profile tab → Bug report -->
+        <activity android:name=".BugReportActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+            android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.XavierDrive.Home" />
 
         <!-- v1.1.0: share downloaded Drive files with the system viewer -->
