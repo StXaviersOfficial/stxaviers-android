@@ -436,4 +436,58 @@
     <string name="ai_viewer_share_failed">Couldn\'t share the image</string>
     <string name="ai_att_remove_cd">Remove attachment</string>
     <string name="ai_chart_failed">Chart couldn\'t be drawn</string>
+
+    <!-- ══ v1.1.8 — stop button + AI image blocks + bug reports ══ -->
+    <string name="ai_stop_cd">Stop the AI</string>
+    <string name="ai_stopped_note">Stopped</string>
+    <string name="ai_image_card_working">Generating image…</string>
+    <string name="ai_image_card_failed">Image couldn\'t be generated — tap to retry</string>
+    <string name="bug_report_title">Bug report</string>
+    <string name="bug_report_new">Report a bug</string>
+    <string name="bug_report_new_sub">Something broken or wrong? Tell the developers</string>
+    <string name="bug_report_mine">My reports</string>
+    <string name="bug_report_mine_sub">Your earlier reports and their status</string>
+    <string name="bug_report_all">Reported bugs</string>
+    <string name="bug_report_all_sub">Every report from everyone (developer)</string>
+    <string name="bug_hint">Describe the bug — what happened, where, and what you expected instead…</string>
+    <string name="bug_attach_file">Attach file</string>
+    <string name="bug_attach_image">Attach image</string>
+    <string name="bug_send">Send report</string>
+    <string name="bug_sending">Sending your report…</string>
+    <string name="bug_uploaded">Report sent</string>
+    <string name="bug_failed">Couldn\'t send the report</string>
+    <string name="bug_too_big">Attachments must be 100 MB or less</string>
+    <string name="bug_empty">Please describe the bug first</string>
+    <string name="bug_ack_title">Report received</string>
+    <string name="bug_ack">Sorry for the inconvenience. Our developers have received your report and will look into it shortly. You can check its status anytime under My reports.</string>
+    <string name="bug_none_yet">No bug reports yet</string>
+    <string name="bug_load_failed">Couldn\'t load your reports</string>
+    <string name="bug_status_under_review">Under review</string>
+    <string name="bug_status_resolved">Resolved</string>
+    <string name="bug_status_false">False</string>
+    <string name="bug_reported_by">Reported by %1$s</string>
+    <string name="bug_add_response">Add response</string>
+    <string name="bug_response_hint">Write a response to the reporter…</string>
+    <string name="bug_response_sent">Response added</string>
+    <string name="bug_status_updated">Status updated</string>
+    <string name="bug_attachments">Attachments</string>
+    <string name="bug_responses">Developer responses</string>
+    <string name="bug_no_responses">No responses yet</string>
+    <string name="bug_download">Download</string>
+    <string name="bug_mic_cd">Speak the bug</string>
+
+    <!-- ══ v1.1.8 — latest log (every role) + device specs ══ -->
+    <string name="log_title">Latest log</string>
+    <string name="log_title_sub">The last hour of app activity</string>
+    <string name="log_disabled_sub">Logging is off</string>
+    <string name="log_sheet_title">Latest log</string>
+    <string name="log_sheet_hint">The app keeps a rolling log of the last hour of activity. It is attached automatically to every bug report you send, so developers can see exactly what happened. It never leaves your phone otherwise.</string>
+    <string name="log_disable">Disable logging</string>
+    <string name="log_enable">Enable logging</string>
+    <string name="log_view">View log</string>
+    <string name="log_download">Download latestlog.txt</string>
+    <string name="log_now_enabled">Logging is on again</string>
+    <string name="log_now_disabled">Logging is off — nothing new is recorded</string>
+    <string name="log_empty">The log is empty (nothing recorded in the last hour)</string>
+    <string name="log_viewer_title">latestlog.txt</string>
 </resources>
