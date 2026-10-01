@@ -38,5 +38,8 @@ public class XdActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // v1.1.8: the rolling activity log (latestlog.txt, last hour) —
+        // idempotent, failure-proof, attached to every bug report.
+        XLog.init(this);
     }
 }
