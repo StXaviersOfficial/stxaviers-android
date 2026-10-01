@@ -2,6 +2,7 @@ package com.stxaviers.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.app.ProgressDialog;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -12,10 +13,12 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
@@ -151,6 +154,15 @@ public class ProfileActivity extends XdActivity {
         // the photo is gone; this row is the one door to the editor)
         findViewById(R.id.profile_edit_btn).setOnClickListener(v ->
                 showEditDialog());
+
+        // v1.1.8: Bug report — report bugs + follow their status
+        findViewById(R.id.profile_bugs).setOnClickListener(v ->
+                startActivitySafe(BugReportActivity.class));
+
+        // v1.1.8: Latest log — EVERY role (owner order). Opens the sheet
+        // with Disable logging / View log / Download latestlog.txt.
+        findViewById(R.id.profile_log).setOnClickListener(v -> showLogSheet());
+        refreshLogCaption();
 
         findViewById(R.id.profile_school).setOnClickListener(v ->
                 startActivitySafe(SchoolActivity.class));
@@ -360,6 +372,129 @@ public class ProfileActivity extends XdActivity {
         } catch (Throwable t) {
             Ui.toast(this, String.valueOf(t));
         }
+    }
+
+    // ═══ v1.1.8: Latest log (every role — owner order) ═════════════════
+
+    /** The caption under "Latest log": what logging currently does. */
+    private void refreshLogCaption() {
+        try {
+            TextView sub = findViewById(R.id.profile_log_sub);
+            if (sub == null) return;
+            sub.setText(XLog.enabled()
+                    ? getText(R.string.log_title_sub)
+                    : getText(R.string.log_disabled_sub));
+        } catch (Throwable ignored) {}
+    }
+
+    /** The Latest-log sheet: Disable logging · View log · Download
+     *  latestlog.txt — exactly the three options the owner specified. */
+    private void showLogSheet() {
+        final boolean on = XLog.enabled();
+        String[] items = {
+                getString(on ? R.string.log_disable : R.string.log_enable),
+                getString(R.string.log_view),
+                getString(R.string.log_download),
+        };
+        new AlertDialog.Builder(this, R.style.Theme_XavierDrive_Dialog)
+                .setTitle(R.string.log_sheet_title)
+                .setMessage(R.string.log_sheet_hint)
+                .setItems(items, (d, which) -> {
+                    if (which == 0) {
+                        XLog.setEnabled(this, !on);
+                        refreshLogCaption();
+                        Ui.toast(this, !on
+                                ? getString(R.string.log_now_enabled)
+                                : getString(R.string.log_now_disabled));
+                    } else if (which == 1) {
+                        showLogViewer();
+                    } else {
+                        downloadLog();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** Fullscreen scrollable viewer of latestlog.txt (newest at the end). */
+    private void showLogViewer() {
+        final String text = XLog.read();
+        if (text.isEmpty()) {
+            Ui.toast(this, getString(R.string.log_empty));
+            return;
+        }
+        float dp = getResources().getDisplayMetrics().density;
+        ScrollView sc = new ScrollView(this);
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextSize(10.5f);
+        tv.setTypeface(Typefaces.interRegular(this));
+        tv.setTextColor(Fx.color(this, R.color.home_ink));
+        tv.setPadding((int) (16 * dp), (int) (14 * dp),
+                (int) (16 * dp), (int) (20 * dp));
+        tv.setTextIsSelectable(true);
+        sc.addView(tv);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Fx.color(this, R.color.home_bg));
+        root.addView(sc, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        final Dialog d = new Dialog(this,
+                android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        d.setContentView(root);
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding((int) (8 * dp), (int) (10 * dp), (int) (16 * dp), 0);
+        root.addView(head, 0, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        ImageView close = new ImageView(this);
+        close.setImageResource(R.drawable.ic_close);
+        close.setColorFilter(Fx.color(this, R.color.home_ink));
+        close.setPadding((int) (10 * dp), (int) (10 * dp),
+                (int) (10 * dp), (int) (10 * dp));
+        close.setOnClickListener(x -> d.dismiss());
+        head.addView(close, new LinearLayout.LayoutParams(
+                (int) (44 * dp), (int) (44 * dp)));
+        TextView title = new TextView(this);
+        title.setText(R.string.log_viewer_title);
+        title.setTextSize(18f);
+        title.setTypeface(Typefaces.outfitMedium(this));
+        title.setTextColor(Fx.color(this, R.color.home_ink));
+        head.addView(title);
+        d.show();
+        sc.post(() -> sc.fullScroll(View.FOCUS_DOWN));
+    }
+
+    /** latestlog.txt -> the system Downloads collection. */
+    private void downloadLog() {
+        final String text = XLog.read();
+        if (text.isEmpty()) {
+            Ui.toast(this, getString(R.string.log_empty));
+            return;
+        }
+        new Thread(() -> {
+            String err = null, path = null;
+            try {
+                path = Ui.saveToDownloads(ProfileActivity.this,
+                        text.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        "latestlog.txt", "text/plain");
+            } catch (Throwable t) {
+                err = t.getMessage() == null ? String.valueOf(t) : t.getMessage();
+            }
+            final String e = err, p = path;
+            h.post(() -> {
+                if (isFinishing()) return;
+                if (e != null) {
+                    Ui.toast(ProfileActivity.this,
+                            getString(R.string.upload_failed) + ": " + e);
+                } else {
+                    Ui.toast(ProfileActivity.this,
+                            getString(R.string.ai_saved_downloads) + " " + p);
+                }
+            });
+        }, "xd-log-dl").start();
     }
 
     private void openLegal(String url, String title) {
