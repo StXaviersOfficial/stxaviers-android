@@ -79,6 +79,13 @@ public class SplashActivity extends XdActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         shownAt = System.currentTimeMillis();
+        // v1.1.8: one boot line per cold start — version + device, so a
+        // bug report's attached log always starts with the basics
+        try {
+            XLog.i("boot", "XavierDrive "
+                    + getPackageManager().getPackageInfo(getPackageName(), 0).versionName
+                    + " · " + DeviceInfo.summary(this));
+        } catch (Throwable ignored) {}
         setContentView(R.layout.activity_splash);
         updater = new Updater(this);
         installRx = Installer.register(this, new Installer.Listener() {
