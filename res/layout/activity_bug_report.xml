@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ════════════════════════════════════════════════════════════════════
+     BUG REPORT (v1.1.8) — reached from the Profile tab. Hub with up to
+     three doors (Report a bug / My reports / Reported bugs for devs),
+     then lists and the detail view rendered into the content frame.
+     ════════════════════════════════════════════════════════════════════ -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/home_bg">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingLeft="8dp"
+        android:paddingRight="16dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="6dp">
+
+        <ImageView
+            android:id="@+id/bug_back"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:scaleType="centerInside"
+            android:padding="10dp"
+            android:src="@drawable/ic_close"
+            android:tint="@color/home_ink"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/close" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/bug_report_title"
+            android:textSize="20sp"
+            android:fontFamily="@font/outfit_medium"
+            android:textColor="@color/home_ink" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:id="@+id/bug_content"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+</LinearLayout>
