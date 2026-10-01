@@ -157,14 +157,16 @@ public class AuthActivity extends XdActivity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (done) return true;
                 android.net.Uri uri = request.getUrl();
-                String scheme = uri.getScheme() == null ? "" : uri.getScheme();
+                String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
                 if (!scheme.equals("http") && !scheme.equals("https")) {
                     return true; // swallow mailto:/market: etc. — stay in the flow
                 }
-                String host = uri.getHost() == null ? "" : uri.getHost();
+                String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase();
                 // The worker's OAuth callback 302s to the site origin once the
                 // session cookie is set — that is our "login complete" signal.
-                if (host.equals("stxaviers.pages.dev")) {
+                // v1.1.9 security: the signal is accepted over https ONLY — a
+                // plaintext http redirect must never count as login-complete.
+                if (scheme.equals("https") && host.equals("stxaviers.pages.dev")) {
                     onFrontendReached(uri.toString());
                     return true; // never actually load the site here
                 }
@@ -178,7 +180,11 @@ public class AuthActivity extends XdActivity {
                 if (!done) {
                     loading = true;
                     bar.setVisibility(View.VISIBLE);
-                    if (url.contains("accounts.google.com")) {
+                    // v1.1.9 security: host-based check (a url.contains()
+                    // substring would match evil.com/accounts.google.com)
+                    String uHost = "";
+                    try { android.net.Uri su = android.net.Uri.parse(url); uHost = su.getHost() == null ? "" : su.getHost().toLowerCase(); } catch (Throwable ignored) {}
+                    if (uHost.endsWith("accounts.google.com")) {
                         status.setText(R.string.auth_status_wait);
                     }
                     armWatchdog();

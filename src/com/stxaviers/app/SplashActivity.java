@@ -157,7 +157,7 @@ public class SplashActivity extends XdActivity {
     private void setVersionFooter() {
         TextView v = (TextView) findViewById(R.id.version_label);
         String name = UpdateCheck.currentVersionName(this);
-        if (v != null) v.setText(name.isEmpty() ? "v1.1.2" : ("v" + name));
+        if (v != null) v.setText(name.isEmpty() ? "v1.1.9" : ("v" + name));
         // the soft alpha pulse is driven by the wall-clock tick below
     }
 

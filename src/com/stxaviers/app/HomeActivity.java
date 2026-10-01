@@ -578,7 +578,7 @@ public class HomeActivity extends XdActivity {
 
         String vn = UpdateCheck.currentVersionName(this);
         int vc = UpdateCheck.currentVersionCode(this);
-        setText(R.id.dev_version, (vn.isEmpty() ? "1.1.2" : vn)
+        setText(R.id.dev_version, (vn.isEmpty() ? "1.1.9" : vn)
                 + " (" + vc + ")");
 
         goIf(R.id.dev_admin_center, AdminRolesActivity.class);

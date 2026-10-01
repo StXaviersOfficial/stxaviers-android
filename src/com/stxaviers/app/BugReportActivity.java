@@ -51,6 +51,10 @@ import java.util.Locale;
  */
 public class BugReportActivity extends XdActivity {
 
+    // v1.1.9 endpoint dedupe: every bug-report route hangs off this one base,
+    // so the app side can never drift from the worker's /api/bugs tree again.
+    private static final String EP_BUGS = "/api/bugs";
+
     private static final int PICK_FILE = 71;
     private static final int PICK_IMAGE = 72;
     private static final int REQ_MIC = 73;
@@ -499,7 +503,7 @@ public class BugReportActivity extends XdActivity {
                 JSONObject body = ApiClient.obj("message", msg);
                 body.put("device", device);
                 body.put("deviceSummary", deviceSummary);
-                ApiClient.Resp r = ApiClient.requestJson("POST", "/api/bugs", body);
+                ApiClient.Resp r = ApiClient.requestJson("POST", EP_BUGS, body);
                 if (r.ok && r.json != null) {
                     folderId = r.json.optString("folderId", "");
                     id = r.json.optString("id", "");
@@ -510,7 +514,7 @@ public class BugReportActivity extends XdActivity {
                 if (err == null && folderId != null) {
                     for (Pending p : pending) {
                         ApiClient.Resp a = ApiClient.postMultipart(
-                                "/api/bugs/" + folderId + "/file",
+                                EP_BUGS + "/" + folderId + "/file",
                                 p.name, p.mime, p.bytes, null);
                         if (!a.ok) {
                             err = p.name + ": " + (a.error().isEmpty()
@@ -525,7 +529,7 @@ public class BugReportActivity extends XdActivity {
                         && logBytes.length > 0) {
                     try {
                         ApiClient.Resp l = ApiClient.postMultipart(
-                                "/api/bugs/" + folderId + "/file",
+                                EP_BUGS + "/" + folderId + "/file",
                                 "latestlog.txt", "text/plain", logBytes, null);
                         if (!l.ok) XLog.w("bug",
                                 "latestlog.txt attach failed: HTTP " + l.code);
@@ -596,7 +600,7 @@ public class BugReportActivity extends XdActivity {
 
         new Thread(() -> {
             ApiClient.Resp r = ApiClient.request("GET",
-                    all ? "/api/bugs" : "/api/bugs/mine");
+                    all ? EP_BUGS : EP_BUGS + "/mine");
             final List<JSONObject> reports = new ArrayList<>();
             String err = null;
             if (r.ok && r.json != null) {
@@ -734,7 +738,7 @@ public class BugReportActivity extends XdActivity {
 
         new Thread(() -> {
             ApiClient.Resp r = ApiClient.request("GET",
-                    "/api/bugs/" + folderId);
+                    EP_BUGS + "/" + folderId);
             JSONObject bug = null;
             JSONArray attachments = null;
             boolean canRespond = false;
@@ -1020,7 +1024,7 @@ public class BugReportActivity extends XdActivity {
             String err = null, path = null;
             try {
                 InputStream in = ApiClient.openStream(
-                        "/api/bugs/" + folderId + "/file?f="
+                        EP_BUGS + "/" + folderId + "/file?f="
                                 + ApiClient.enc(name), null);
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
                 byte[] buf = new byte[16384];
@@ -1078,7 +1082,7 @@ public class BugReportActivity extends XdActivity {
             String what = body.has("response") ? "response" : "status";
             XLog.i("bug", "update " + folderId + " (" + what + ")");
             ApiClient.Resp r = ApiClient.requestJson("POST",
-                    "/api/bugs/" + folderId, body);
+                    EP_BUGS + "/" + folderId, body);
             final boolean ok = r.ok;
             final String err = r.error();
             h.post(() -> {

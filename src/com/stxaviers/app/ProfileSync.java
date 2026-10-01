@@ -86,8 +86,12 @@ public final class ProfileSync {
             if (name != null && name.trim().length() >= 2) {
                 body.put("name", name.trim());
             }
-            if (bmp != null) {
-                body.put("photo", encode(bmp));
+            // v1.1.9 fix: encode the bitmap ONCE and reuse it for the request
+            // and the local cache (encode() ran twice before — double work and
+            // two potentially different JPEG encodes of the same photo).
+            String photoData = bmp != null ? encode(bmp) : null;
+            if (photoData != null) {
+                body.put("photo", photoData);
             }
             ApiClient.Resp r = ApiClient.requestJson("POST",
                     "/api/user/profile", body);
@@ -96,8 +100,8 @@ public final class ProfileSync {
                 if (name != null && name.trim().length() >= 2) {
                     st.name = name.trim();
                 }
-                if (bmp != null) {
-                    st.photo = encode(bmp);
+                if (photoData != null) {
+                    st.photo = photoData;
                     sPhoto = bmp;
                 }
                 st.save(c);

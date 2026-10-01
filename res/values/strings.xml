@@ -26,7 +26,7 @@
     <string name="download_failed">The download didn\'t finish. Check your connection and try again.</string>
     <string name="install_failed">The installation was cancelled. The update is still saved, so you can try again.</string>
     <string name="update_installed">Update installed — starting XavierDrive</string>
-    <string name="version_label">v1.1.2</string>
+    <string name="version_label">v1.1.9</string>
     <string name="exit_hint">Press back again to leave XavierDrive</string>
 
     <!-- login -->
