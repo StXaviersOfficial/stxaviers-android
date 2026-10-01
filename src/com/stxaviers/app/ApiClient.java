@@ -106,12 +106,18 @@ public final class ApiClient {
     public static Resp request(String method, String pathAndQuery) {
         HttpURLConnection c = null;
         boolean mutating = !method.equals("GET") && !method.equals("HEAD");
+        long t0 = System.currentTimeMillis();
         try {
             c = (HttpURLConnection) new java.net.URL(GoogleAuth.WORKER_URL
                     + pathAndQuery).openConnection();
             applyCommon(c, method, mutating);
-            return new Resp(c.getResponseCode(), readAll(c));
+            Resp r = new Resp(c.getResponseCode(), readAll(c));
+            XLog.net(method, pathAndQuery, r.code,
+                    System.currentTimeMillis() - t0, r.body.length());
+            return r;
         } catch (Throwable t) {
+            XLog.net(method, pathAndQuery, 0,
+                    System.currentTimeMillis() - t0, -1);
             return networkFail(t);
         } finally {
             if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
@@ -122,6 +128,7 @@ public final class ApiClient {
     public static Resp requestJson(String method, String path,
                                    JSONObject body) {
         HttpURLConnection c = null;
+        long t0 = System.currentTimeMillis();
         try {
             byte[] bytes = (body == null ? new JSONObject() : body)
                     .toString().getBytes(StandardCharsets.UTF_8);
@@ -134,8 +141,13 @@ public final class ApiClient {
             OutputStream os = c.getOutputStream();
             os.write(bytes);
             os.close();
-            return new Resp(c.getResponseCode(), readAll(c));
+            Resp r = new Resp(c.getResponseCode(), readAll(c));
+            XLog.net(method, path, r.code,
+                    System.currentTimeMillis() - t0, r.body.length());
+            return r;
         } catch (Throwable t) {
+            XLog.net(method, path, 0,
+                    System.currentTimeMillis() - t0, -1);
             return networkFail(t);
         } finally {
             if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
@@ -148,6 +160,30 @@ public final class ApiClient {
         void onEvent(JSONObject ev);
     }
 
+    /** v1.1.8: user-visible cancellation handle. The AI screen's send
+     *  button becomes a STOP button while the model works; abort() kills
+     *  the in-flight stream (the quota stays charged server-side — the
+     *  request was made, exactly as the owner specified). */
+    public static final class Ctl {
+        public volatile boolean cancelled;
+        private HttpURLConnection conn;
+        private Runnable extraAbort;
+
+        public void abort() {
+            cancelled = true;
+            HttpURLConnection c = conn;
+            if (c != null) { try { c.disconnect(); } catch (Throwable ignored) {} }
+            Runnable x = extraAbort;
+            if (x != null) { try { x.run(); } catch (Throwable ignored) {} }
+        }
+    }
+
+    /** See streamSse(path, body, listener, ctl). */
+    public static Resp streamSse(String path, JSONObject body,
+                                 SseListener listener) {
+        return streamSse(path, body, listener, null);
+    }
+
     /**
      * POST a JSON body and read a text/event-stream response, handing each
      * {@code data: {json}} event to the listener as it arrives. Blocking.
@@ -155,15 +191,21 @@ public final class ApiClient {
      * response (or a network failure) like every other call here. The read
      * timeout is long (the Worker allows the backend up to 120 s) but any
      * silence longer than that still ends the call.
+     * v1.1.8: pass a {@link Ctl} to let the user abort mid-stream — events
+     * already delivered stay delivered; the call returns promptly after.
      */
     public static Resp streamSse(String path, JSONObject body,
-                                 SseListener listener) {
+                                 SseListener listener, Ctl ctl) {
         HttpURLConnection c = null;
         try {
             byte[] bytes = (body == null ? new JSONObject() : body)
                     .toString().getBytes(StandardCharsets.UTF_8);
             c = (HttpURLConnection) new java.net.URL(GoogleAuth.WORKER_URL + path)
                     .openConnection();
+            if (ctl != null) {
+                ctl.conn = c;
+                if (ctl.cancelled) { try { c.disconnect(); } catch (Throwable ignored) {} return new Resp(0, ""); }
+            }
             applyCommon(c, "POST", true);
             c.setReadTimeout(130000);
             c.setRequestProperty("Accept", "text/event-stream");
@@ -180,6 +222,7 @@ public final class ApiClient {
             StringBuilder data = new StringBuilder();
             String line;
             while ((line = r.readLine()) != null) {
+                if (ctl != null && ctl.cancelled) break;
                 if (line.startsWith("data:")) {
                     String d = line.substring(5);
                     if (d.startsWith(" ")) d = d.substring(1);
@@ -192,12 +235,63 @@ public final class ApiClient {
                 }
             }
             r.close();
+            if (ctl != null && ctl.cancelled) return new Resp(0, "");
             if (data.length() > 0) {   // last event without a trailing blank line
                 try {
                     listener.onEvent(new JSONObject(data.toString()));
                 } catch (Throwable ignored) {}
             }
             return new Resp(200, "");
+        } catch (Throwable t) {
+            if (ctl != null && ctl.cancelled) return new Resp(0, "");
+            return networkFail(t);
+        } finally {
+            if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * v1.1.8: POST one file as multipart/form-data (field "file") — the
+     * bug-report attachment upload. Reports progress on the calling thread.
+     */
+    public static Resp postMultipart(String path, String fileName,
+                                     String mimeType, byte[] bytes,
+                                     final java.util.function.IntConsumer progress) {
+        HttpURLConnection c = null;
+        try {
+            String boundary = "----XavierDriveApp" + System.currentTimeMillis();
+            String mime = mimeType == null || mimeType.isEmpty()
+                    ? "application/octet-stream" : mimeType;
+            String head = "--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"file\"; filename=\""
+                    + fileName.replace("\"", "'").replace("\r", "").replace("\n", "")
+                    + "\"\r\nContent-Type: " + mime + "\r\n\r\n";
+            String tail = "\r\n--" + boundary + "--";
+            byte[] headB = head.getBytes(StandardCharsets.UTF_8);
+            byte[] tailB = tail.getBytes(StandardCharsets.UTF_8);
+            byte[] all = new byte[headB.length + bytes.length + tailB.length];
+            System.arraycopy(headB, 0, all, 0, headB.length);
+            System.arraycopy(bytes, 0, all, headB.length, bytes.length);
+            System.arraycopy(tailB, 0, all, headB.length + bytes.length, tailB.length);
+            c = (HttpURLConnection) new java.net.URL(GoogleAuth.WORKER_URL + path)
+                    .openConnection();
+            applyCommon(c, "POST", true);
+            c.setDoOutput(true);
+            c.setFixedLengthStreamingMode(all.length);
+            c.setRequestProperty("Content-Type",
+                    "multipart/form-data; boundary=" + boundary);
+            OutputStream os = c.getOutputStream();
+            int chunk = 64 * 1024;
+            int off = 0;
+            while (off < all.length) {
+                int n = Math.min(chunk, all.length - off);
+                os.write(all, off, n);
+                off += n;
+                if (progress != null) progress.accept(off * 100 / all.length);
+            }
+            if (all.length == 0 && progress != null) progress.accept(100);
+            os.close();
+            return new Resp(c.getResponseCode(), readAll(c));
         } catch (Throwable t) {
             return networkFail(t);
         } finally {
