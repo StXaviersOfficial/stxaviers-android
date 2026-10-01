@@ -166,6 +166,12 @@ public class AiActivity extends XdActivity {
         String prompt;
     }
 
+    /** v1.1.8: one AI-delivered ```image block — the model asks for a
+     *  picture and the app draws it with the image engine (Pollinations). */
+    private static final class ImageBlock {
+        String prompt;
+    }
+
     private final Runnable thinkCycle = new Runnable() {
         private int stage = 0;
         @Override public void run() {
@@ -235,7 +241,12 @@ public class AiActivity extends XdActivity {
             startActivity(new Intent(this, AiSettingsActivity.class));
         });
 
-        send.setOnClickListener(v -> send());
+        send.setOnClickListener(v -> {
+            // v1.1.8: while the AI is working the same button is a STOP
+            // button — one tap ends the task right there (owner order)
+            if (busy) { stopGeneration(); return; }
+            send();
+        });
         // v1.1.7: the keyboard's enter key inserts a new line (multiline
         // field, no IME action) — only the send arrow submits.
 
@@ -293,6 +304,10 @@ public class AiActivity extends XdActivity {
         // settings (font / colour / voice) may have changed
         renderSession();
         refreshSendUi();
+        // v1.1.8: the usage chip is a LIVE tracker now — every visit to the
+        // AI screen pulls the real server-side count (backend-stored, no
+        // more per-isolate reset) and shows it immediately
+        fetchQuota();
     }
 
     @Override
@@ -1023,22 +1038,45 @@ public class AiActivity extends XdActivity {
     // ═══════════════════════════════ AI file blocks (v1.1.5) ═══════════
 
     /** Parse the body of one ```file block: first line = JSON meta
-     *  {name, mime}, the rest = the file content. */
+     *  {name, mime}, the rest = the file content. Tolerant of CRLF. */
     private static FileBlock parseFileBlock(String body) {
         try {
-            int nl = body.indexOf('\n');
+            String b = body.replace("\r\n", "\n");
+            int nl = b.indexOf('\n');
             if (nl <= 0) return null;
-            JSONObject meta = new JSONObject(body.substring(0, nl));
+            JSONObject meta = new JSONObject(b.substring(0, nl));
             String name = meta.optString("name", "");
             if (name.isEmpty()) return null;
             FileBlock f = new FileBlock();
             f.name = name;
             f.mime = meta.optString("mime", "text/plain");
-            f.content = body.substring(nl + 1).replaceFirst("\n$", "");
+            f.content = b.substring(nl + 1).replaceFirst("\n$", "");
             return f;
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /** v1.1.8: a ```file block whose meta line didn't parse STILL becomes a
+     *  file card — the owner must never see raw JSON soup because a model
+     *  forgot the exact format. First line that looks like JSON is dropped
+     *  as (broken) meta; everything else is the content. */
+    private static FileBlock fallbackFileBlock(String body, int index) {
+        String b = body.replace("\r\n", "\n");
+        String content = b;
+        int nl = b.indexOf('\n');
+        if (nl > 0) {
+            String first = b.substring(0, nl).trim();
+            if (first.startsWith("{") && first.endsWith("}")) {
+                content = b.substring(nl + 1);
+            }
+        }
+        if (content.trim().isEmpty()) return null;
+        FileBlock f = new FileBlock();
+        f.name = "file-" + (index + 1) + ".txt";
+        f.mime = "text/plain";
+        f.content = content.replaceFirst("\n$", "");
+        return f;
     }
 
     /** Parse one ```pdffile block: a single JSON line
@@ -1058,37 +1096,68 @@ public class AiActivity extends XdActivity {
         }
     }
 
-    /** Pull every ```file / ```pdffile block out of an AI reply; the
-     *  blocks land in `out`, the cleaned text (blocks removed) returns.
-     *  Mirrors the website's extractMsgFiles(). */
-    static String stripFileBlocks(String text, List<Object> out) {
-        if (text == null || text.isEmpty()) return "";
-        String t = text;
-        while (true) {
-            int f = t.indexOf("```file\n");
-            int p = t.indexOf("```pdffile\n");
-            if (f < 0 && p < 0) break;
-            boolean isPdf = p >= 0 && (f < 0 || p < f);
-            int start = isPdf ? p : f;
-            int head = isPdf ? 10 : 7;
-            int end = t.indexOf("```", start + head);
-            if (end < 0) break;
-            String body = t.substring(start + head, end);
-            Object blk = isPdf ? parsePdfBlock(body) : parseFileBlock(body);
-            if (blk != null) out.add(blk);
-            t = t.substring(0, start) + t.substring(Math.min(end + 3, t.length()));
-        }
-        return t;
+    /** v1.1.8: parse one ```image block — JSON {"prompt":"..."}, or the
+     *  whole body as the prompt when the model skipped the JSON. */
+    private static ImageBlock parseImageBlock(String body) {
+        String b = body.replace("\r\n", "\n").trim();
+        if (b.isEmpty() || b.length() > 900) return null;
+        try {
+            JSONObject meta = new JSONObject(b);
+            String p = meta.optString("prompt", "").trim();
+            if (!p.isEmpty()) {
+                ImageBlock ib = new ImageBlock();
+                ib.prompt = p;
+                return ib;
+            }
+        } catch (Throwable ignored) {}
+        ImageBlock ib = new ImageBlock();
+        ib.prompt = b;
+        return ib;
     }
 
-    /** File cards under an AI reply — one per delivered file. */
+    private static final java.util.regex.Pattern BLOCK_RE =
+            java.util.regex.Pattern.compile(
+                    "```(pdffile|file|image)\\r?\\n([\\s\\S]*?)```");
+
+    /** Pull every ```file / ```pdffile / ```image block out of an AI reply;
+     *  the blocks land in `out`, the cleaned text (blocks removed) returns.
+     *  Mirrors the website's extractMsgFiles(). v1.1.8: regex-based (CRLF
+     *  safe), image blocks, and malformed ```file blocks still become cards
+     *  via fallbackFileBlock instead of leaking raw JSON into the bubble. */
+    static String stripFileBlocks(String text, List<Object> out) {
+        if (text == null || text.isEmpty()) return "";
+        java.util.regex.Matcher m = BLOCK_RE.matcher(text);
+        StringBuilder sb = new StringBuilder();
+        int last = 0;
+        while (m.find()) {
+            String kind = m.group(1);
+            String body = m.group(2);
+            Object blk = "file".equals(kind) ? parseFileBlock(body)
+                    : "pdffile".equals(kind) ? parsePdfBlock(body)
+                    : parseImageBlock(body);
+            if (blk == null && "file".equals(kind)) {
+                blk = fallbackFileBlock(body, out.size());
+            }
+            if (blk == null) continue;   // unparseable pdf/image: leave the text
+            out.add(blk);
+            sb.append(text, last, m.start());
+            last = m.end();
+        }
+        sb.append(text, last, text.length());
+        return sb.toString();
+    }
+
+    /** File cards under an AI reply — one per delivered file, plus one
+     *  image card per ```image block. */
     private void addFileCards(View row, List<Object> blocks) {
         if (blocks == null || blocks.isEmpty()) return;
         LinearLayout box = row.findViewById(R.id.ai_files);
         if (box == null) return;
         box.setVisibility(View.VISIBLE);
         for (Object b : blocks) {
-            box.addView(buildFileCard(b));
+            box.addView(b instanceof ImageBlock
+                    ? buildImageCard((ImageBlock) b)
+                    : buildFileCard(b));
         }
     }
 
@@ -1185,6 +1254,105 @@ public class AiActivity extends XdActivity {
 
         card.setOnClickListener(v -> previewFile(block));
         return card;
+    }
+
+    // ══ v1.1.8: ```image block card ═════════════════════════════════
+
+    /** The image URL for one ```image block. The seed is DERIVED FROM THE
+     *  PROMPT so the same block always draws the same picture — reopening
+     *  the chat (or another device) shows the identical image, exactly like
+     *  a stored attachment would. */
+    private static String imageUrlFor(String prompt) {
+        int seed = Math.abs(prompt.trim().hashCode());
+        return "https://image.pollinations.ai/prompt/"
+                + URLEncoder.encode(prompt) + "?width=768&height=768"
+                + "&nologo=true&seed=" + seed;
+    }
+
+    /** One ```image block rendered as a rounded card: "Generating image…"
+     *  placeholder, swapped for the drawn bitmap on arrival; tap opens the
+     *  fullscreen viewer (Download + Share work there). */
+    private View buildImageCard(final ImageBlock b) {
+        final float dp = getResources().getDisplayMetrics().density;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding((int) (6 * dp), (int) (6 * dp), (int) (6 * dp), (int) (6 * dp));
+        card.setBackgroundResource(R.drawable.img_card_bg);
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        cp.topMargin = (int) (10 * dp);
+        cp.bottomMargin = (int) (2 * dp);
+        card.setLayoutParams(cp);
+
+        final ImageView img = new ImageView(this);
+        img.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        img.setAdjustViewBounds(true);
+        img.setVisibility(View.GONE);
+        card.addView(img);
+
+        final TextView note = new TextView(this);
+        note.setText(R.string.ai_image_card_working);
+        note.setTextSize(12.5f);
+        note.setTypeface(Typefaces.interMedium(this));
+        note.setTextColor(Fx.color(this, R.color.home_muted));
+        note.setGravity(Gravity.CENTER);
+        note.setPadding(0, (int) (26 * dp), 0, (int) (26 * dp));
+        card.addView(note);
+
+        drawImageInto(b, img, note, card, dp);
+        card.setOnClickListener(v -> {
+            Object tag = card.getTag();
+            if (tag instanceof Bitmap) {
+                showImageViewer((Bitmap) tag, null, "ai-image");
+            } else if (card.getTag() instanceof String) {
+                // failed — tap retries
+                note.setText(R.string.ai_image_card_working);
+                drawImageInto(b, img, note, card, dp);
+            }
+        });
+        return card;
+    }
+
+    /** Fetch the image for one block on a worker thread and swap the card
+     *  contents on arrival. The card tag carries the bitmap (or "failed"). */
+    private void drawImageInto(final ImageBlock b, final ImageView img,
+                               final TextView note, final View card, final float dp) {
+        card.setTag(null);
+        new Thread(() -> {
+            Bitmap bmp = null;
+            try {
+                java.net.HttpURLConnection c = (java.net.HttpURLConnection)
+                        new java.net.URL(imageUrlFor(b.prompt)).openConnection();
+                c.setConnectTimeout(15000);
+                c.setReadTimeout(90000);
+                if (c.getResponseCode() == 200) {
+                    InputStream in = c.getInputStream();
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                    byte[] buf = new byte[16384];
+                    int n;
+                    while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+                    in.close();
+                    bmp = BitmapFactory.decodeByteArray(
+                            bos.toByteArray(), 0, bos.size());
+                }
+            } catch (Throwable ignored) {}
+            final Bitmap out = bmp;
+            h.post(() -> {
+                if (isFinishing()) return;
+                if (out != null) {
+                    note.setVisibility(View.GONE);
+                    img.setImageBitmap(out);
+                    img.setVisibility(View.VISIBLE);
+                    card.setTag(out);
+                } else {
+                    note.setText(R.string.ai_image_card_failed);
+                    card.setTag("failed");
+                }
+            });
+        }, "xd-ai-img").start();
     }
 
     /** What happens when a file card is tapped. */
@@ -1693,6 +1861,91 @@ public class AiActivity extends XdActivity {
         if (imm != null) imm.showSoftInput(input, 0);
     }
 
+    /** v1.1.8: the server-side usage of THIS account, straight from the
+     *  backend's durable daily counter — shown in the app bar chip the
+     *  moment the AI screen opens and refreshed after every answer. */
+    private void fetchQuota() {
+        new Thread(() -> {
+            try {
+                ApiClient.Resp r = ApiClient.request("GET", "/api/quota");
+                if (r.ok && r.json != null) {
+                    final int used = r.json.optInt("used", -1);
+                    final int limit = r.json.optInt("limit", -1);
+                    if (used >= 0 && limit > 0) {
+                        h.post(() -> {
+                            if (!isFinishing()) showQuota(used, limit);
+                        });
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }, "xd-quota").start();
+    }
+
+    /** v1.1.8: explicit image requests skip the chat model entirely and go
+     *  straight to the image engine — the website's behaviour, ported so
+     *  "draw me a cat" draws a cat instead of the model apologising. */
+    private static final java.util.regex.Pattern IMG_T1 =
+            java.util.regex.Pattern.compile(
+                    "\\b(generate|create|draw|make|paint|illustrate|produce|render)\\s+"
+                            + "(a\\s+|an\\s+|me\\s+a\\s+|me\\s+an\\s+)?"
+                            + "(random\\s+|realistic\\s+|cute\\s+|detailed\\s+|simple\\s+|beautiful\\s+|pencil\\s+|watercolor\\s+|cartoon\\s+)?"
+                            + "(image|picture|photo|illustration|drawing|artwork|sketch|painting|poster|portrait|scene|wallpaper|art)\\b",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+    private static final java.util.regex.Pattern IMG_T2 =
+            java.util.regex.Pattern.compile("^(draw|paint|illustrate|sketch)\\s+.{3}",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+    private static final java.util.regex.Pattern IMG_T3 =
+            java.util.regex.Pattern.compile(
+                    "\\b(pencil\\s+sketch|pencil\\s+drawing|watercolor|pixel\\s+art|random\\s+sketch|random\\s+drawing|digital\\s+art)\\s+(of\\s+)?",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    private static boolean isImageRequest(String text) {
+        String t = text == null ? "" : text.trim();
+        if (t.length() < 4 || t.length() > 400) return false;
+        return IMG_T1.matcher(t).find() || IMG_T2.matcher(t).find()
+                || IMG_T3.matcher(t).find();
+    }
+
+    /** GREY when there is nothing to send, BLUE the moment there is. */
+    private void refreshSendUi() {
+        boolean ready = input.getText().toString().trim().length() > 0
+                || !attach.isEmpty();
+        ((ImageView) sendIcon).setImageResource(R.drawable.ic_arrow_up);
+        send.setBackgroundResource(ready
+                ? R.drawable.ai_send_ready : R.drawable.ai_send_idle);
+        ((ImageView) sendIcon).setColorFilter(ready
+                ? Color.WHITE
+                : Fx.color(this, R.color.home_muted));
+    }
+
+    /** v1.1.8: the send button's WORKING state — a red STOP square. One tap
+     *  on it ends the in-flight task immediately (owner order). */
+    private void setBusyUi(boolean on) {
+        if (on) {
+            send.setBackgroundResource(R.drawable.ai_stop_bg);
+            ((ImageView) sendIcon).setImageResource(R.drawable.ic_stop);
+            ((ImageView) sendIcon).setColorFilter(Color.WHITE);
+            send.setAlpha(1f);
+            send.setContentDescription(getString(R.string.ai_stop_cd));
+        } else {
+            send.setContentDescription(null);
+            refreshSendUi();
+        }
+    }
+
+    /** The active cancellation handles (null when idle). */
+    private ApiClient.Ctl streamCtl;
+    private ApiClient.Ctl imgCtl;
+
+    /** STOP — aborts whatever the AI is doing right now, with no further
+     *  movement. The server-side quota charge stands (owner order: a stopped
+     *  task still counts as usage). */
+    private void stopGeneration() {
+        XLog.i("ai", "STOP — user ended the task mid-work");
+        if (streamCtl != null) streamCtl.abort();
+        if (imgCtl != null) imgCtl.abort();
+    }
+
     /** step 8: "12/30 today" — the server reports the used/limit pair on
      *  every answer (JSON response or the stream's done event). */
     private void showQuota(int used, int limit) {
@@ -1706,16 +1959,7 @@ public class AiActivity extends XdActivity {
         } catch (Throwable ignored) {}
     }
 
-    /** GREY when there is nothing to send, BLUE the moment there is. */
-    private void refreshSendUi() {
-        boolean ready = input.getText().toString().trim().length() > 0
-                || !attach.isEmpty();
-        send.setBackgroundResource(ready
-                ? R.drawable.ai_send_ready : R.drawable.ai_send_idle);
-        ((ImageView) sendIcon).setColorFilter(ready
-                ? Color.WHITE
-                : Fx.color(this, R.color.home_muted));
-    }
+    /** v1.1.8: refreshSendUi + setBusyUi live in the sending section below. */
 
     private float composedFontSize() {
         return getSharedPreferences(PREFS, MODE_PRIVATE)
@@ -1737,10 +1981,23 @@ public class AiActivity extends XdActivity {
         }
         if (text.isEmpty() && attach.isEmpty()) return;
 
+        // v1.1.8: log the exchange (never the message content itself)
+        XLog.i("ai", "send: " + text.length() + " chars"
+                + (attach.isEmpty() ? "" : ", " + attach.size() + " attachment(s)")
+                + ", session=" + (currentId == null ? "?" : currentId));
+
+        // v1.1.8: an explicit image request goes straight to the image
+        // engine — never through the chat model (which cannot draw)
+        if (!text.isEmpty() && attach.isEmpty() && isImageRequest(text)) {
+            input.setText("");
+            generateImage(text);
+            return;
+        }
+
         busy = true;
         input.setText("");
         input.setEnabled(false);
-        send.setAlpha(0.4f);
+        setBusyUi(true);
         emptyState.setVisibility(View.GONE);
 
         // everything below belongs to THIS conversation — even if the
@@ -1873,6 +2130,7 @@ public class AiActivity extends XdActivity {
     private void requestAnswer(final String sid, final JSONObject body,
                                final boolean saveAfter,
                                final boolean firstExchange) {
+        final long t0 = System.currentTimeMillis();
         new Thread(() -> {
             String answer = null, err = null;
             // step 6: stream typed agentic events (steps / summaries /
@@ -1881,9 +2139,14 @@ public class AiActivity extends XdActivity {
             // FAILED EXPLICITLY (an error event) we do NOT fall back: the
             // failed request's quota was already refunded, and retrying
             // here would silently charge the message a second time.
+            // v1.1.8: the same no-fallback rule applies when the USER taps
+            // stop — the task ends right there, partial text is kept, and
+            // the charge stands (owner order).
             final StringBuilder streamed = new StringBuilder();
             final String[] streamErr = {null};
             final int[] quotaUsed = {-1}, quotaLimit = {-1};
+            final ApiClient.Ctl ctl = new ApiClient.Ctl();
+            streamCtl = ctl;
             try { body.put("agentic", true); } catch (Throwable ignored) {}
             ApiClient.Resp sr = ApiClient.streamSse("/api/chat/stream", body,
                     ev -> {
@@ -1904,10 +2167,18 @@ public class AiActivity extends XdActivity {
                                 || "artifact".equals(t)) {
                             h.post(() -> onAgentEvent(sid, ev));
                         }
-                    });
+                    }, ctl);
             try { body.remove("agentic"); } catch (Throwable ignored) {}
 
-            if (streamed.length() > 0) {
+            if (ctl.cancelled) {
+                // user pressed stop: keep whatever streamed, never fall
+                // back. A bare stop shows a quiet "Stopped" note; partial
+                // answers keep their text with a small marker so the saved
+                // history reads right. Nothing else moves after this.
+                answer = streamed.length() > 0
+                        ? streamed.toString() + "\n\n(" + getString(R.string.ai_stopped_note) + ")"
+                        : getString(R.string.ai_stopped_note);
+            } else if (streamed.length() > 0) {
                 answer = streamed.toString();
             } else if (streamErr[0] != null) {
                 err = streamErr[0];
@@ -1951,7 +2222,10 @@ public class AiActivity extends XdActivity {
                 hideTyping();
                 busy = false;
                 input.setEnabled(true);
-                send.setAlpha(1f);
+                setBusyUi(false);
+                XLog.i("ai", "reply ready: "
+                        + (ans == null ? "(error/none)" : ans.length() + " chars")
+                        + " in " + (System.currentTimeMillis() - t0) + "ms");
                 String t = Ui.now("h:mm a");
                 boolean showing = sid.equals(currentId);
                 if (ans != null) {
@@ -1996,14 +2270,16 @@ public class AiActivity extends XdActivity {
                             ChatSync.save(this, s, null);
                         }
                     }
-                    // the AI names the chat after the first reply
-                    if (firstExchange) {
+                    // the AI names the chat after the first reply — but NOT
+                    // when the user stopped the task (no further movement)
+                    if (firstExchange && !ctl.cancelled) {
                         fetchAiTitle(sid, body.optString("message", ""), ans);
                     }
                 } else if (showing) {
                     appendBubble("ai", e, t, null, -1, true);
                 }
                 if (showing) scrollDown();
+                streamCtl = null;
             });
         }, "xd-ai-send").start();
     }
@@ -2073,7 +2349,7 @@ public class AiActivity extends XdActivity {
 
         busy = true;
         input.setEnabled(false);
-        send.setAlpha(0.4f);
+        setBusyUi(true);
         renderSession();
         showTyping();
 
@@ -2118,9 +2394,10 @@ public class AiActivity extends XdActivity {
     /** Pollinations picture, exactly like the website's generator.
      *  Available to everyone (owner order v1.1.7 — students too). */
     private void generateImage(final String prompt) {
+        XLog.i("ai", "image request: " + prompt.length() + " chars");
         busy = true;
         input.setEnabled(false);
-        send.setAlpha(0.4f);
+        setBusyUi(true);
         imageMode = false;
         input.setHint(R.string.ai_hint);
         refreshModeStrip();
@@ -2136,6 +2413,8 @@ public class AiActivity extends XdActivity {
             String err = null;
             File out = null;
             byte[] bytes = null;
+            final ApiClient.Ctl ictl = new ApiClient.Ctl();
+            imgCtl = ictl;
             try {
                 String u = "https://image.pollinations.ai/prompt/"
                         + URLEncoder.encode(prompt, "UTF-8")
@@ -2152,7 +2431,10 @@ public class AiActivity extends XdActivity {
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
                 byte[] buf = new byte[16384];
                 int n;
-                while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+                while ((n = in.read(buf)) > 0) {
+                    if (ictl.cancelled) throw new Exception("cancelled");
+                    bos.write(buf, 0, n);
+                }
                 in.close();
                 bytes = bos.toByteArray();
                 Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0,
@@ -2167,8 +2449,9 @@ public class AiActivity extends XdActivity {
                 fo.write(bytes);
                 fo.close();
             } catch (Throwable t) {
-                err = t.getMessage() == null ? String.valueOf(t)
-                        : t.getMessage();
+                err = ictl.cancelled ? "cancelled"
+                        : (t.getMessage() == null ? String.valueOf(t)
+                        : t.getMessage());
             }
 
             final File file = out;
@@ -2180,10 +2463,12 @@ public class AiActivity extends XdActivity {
                 hideTyping();
                 busy = false;
                 input.setEnabled(true);
-                send.setAlpha(1f);
+                setBusyUi(false);
                 refreshSendUi();
                 boolean showing = sid.equals(currentId);
-                if (error != null) {
+                if (error != null && "cancelled".equals(error)) {
+                    // user pressed stop — end right here, nothing further
+                } else if (error != null) {
                     String msg = getString(R.string.ai_image_failed);
                     addMessage(sid, "ai", msg, t2, null);
                     if (showing) appendBubble("ai", msg, t2, null, -1, true);
@@ -2225,6 +2510,7 @@ public class AiActivity extends XdActivity {
                     }
                 }
                 if (showing) scrollDown();
+                imgCtl = null;
             });
         }, "xd-ai-image").start();
     }
