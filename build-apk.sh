@@ -24,12 +24,12 @@ SDK=/tmp/my-project/android-sdk
 BT=$SDK/build-tools/34.0.0
 PLATFORM=$SDK/platforms/android-34/android.jar
 JDK=/tmp/my-project/jdk17
-PROJ=/home/z/my-project/xavier-drive-fresh/android-app
+PROJ=/home/z/my-project/stxaviers-android
 OUT=$PROJ/build
 AARS=/tmp/my-project/aars
 KS=/home/z/my-project/.secure/upload-keystore.jks
 KSPASS=$(cat /home/z/my-project/.secure/keystore.password)
-VERSION=1.1.8
+VERSION=1.1.9
 
 rm -rf "$OUT"
 mkdir -p "$OUT/compiled" "$OUT/gen" "$OUT/classes" "$OUT/dex" "$OUT/libs"
