@@ -490,4 +490,8 @@
     <string name="log_now_disabled">Logging is off — nothing new is recorded</string>
     <string name="log_empty">The log is empty (nothing recorded in the last hour)</string>
     <string name="log_viewer_title">latestlog.txt</string>
+    <!-- v1.2.0: the 3-option Latest log menu (owner spec 2026-10-02) -->
+    <string name="log_what">What is logging?</string>
+    <string name="log_what_body">Logging records what the app does — screen names, sign-ins, file lists, notices loaded — for the last hour only, in latestlog.txt.\n\nWhy: when something breaks, this log shows developers exactly what the app was doing right before, so bugs get fixed in minutes instead of guesses.\n\nPrivacy: the log never leaves your phone by itself. It is attached only to a bug report you yourself send, and it contains no passwords, messages or personal content.\n\nYou can turn it off any time from this menu.</string>
+    <string name="log_saving">Saving latestlog.txt…</string>
 </resources>

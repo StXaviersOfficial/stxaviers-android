@@ -81,13 +81,50 @@ public class BugReportActivity extends XdActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_bug_report);
-        st = XDState.get(this);
-        content = findViewById(R.id.bug_content);
-        findViewById(R.id.bug_back).setOnClickListener(v -> {
-            if (detailOpen) { showHub(); } else { finish(); }
-        });
-        showHub();
+        try {
+            setContentView(R.layout.activity_bug_report);
+            st = XDState.get(this);
+            content = findViewById(R.id.bug_content);
+            findViewById(R.id.bug_back).setOnClickListener(v -> {
+                if (detailOpen) { showHub(); } else { finish(); }
+            });
+            showHub();
+        } catch (Throwable t) {
+            // v1.2.0: the bug-report screen must NEVER crash the app again
+            // (owner order 2026-09-30, still crashing 2026-10-02). Whatever
+            // goes wrong is rendered IN the screen, in red, with the exact
+            // error — so the cause is visible on the phone itself.
+            renderFatal(t);
+        }
+    }
+
+    /** v1.2.0: fullscreen red error card — the in-app replacement for a
+     *  crash. Shows the exact exception class + message so ANY device-
+     *  specific failure is finally visible. */
+    private void renderFatal(Throwable t) {
+        try {
+            setContentView(R.layout.activity_bug_report);
+            st = XDState.get(this);
+            content = findViewById(R.id.bug_content);
+            findViewById(R.id.bug_back).setOnClickListener(v -> finish());
+            content.removeAllViews();
+            TextView err = new TextView(this);
+            err.setText("The bug-report screen could not open.\n\n"
+                    + "Error: " + t.getClass().getSimpleName()
+                    + (t.getMessage() == null ? "" : (": " + t.getMessage()))
+                    + "\n\nPlease screenshot this and send it — this exact "
+                    + "text is the diagnosis.");
+            err.setTextSize(14f);
+            err.setTextColor(0xFFCC2233);
+            err.setTypeface(Typefaces.interRegular(this));
+            err.setPadding(dp(18), dp(18), dp(18), dp(18));
+            content.addView(err, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+            XLog.e("bug", "hub failed: " + t);
+        } catch (Throwable ignored) {
+            // even the error renderer must never throw
+        }
     }
 
     @Override
@@ -107,6 +144,16 @@ public class BugReportActivity extends XdActivity {
     private boolean detailOpen;
 
     private void showHub() {
+        // v1.2.0: also re-entered via the back button from a detail view —
+        // any failure here lands in the in-app red card, never a crash.
+        try {
+            showHubInner();
+        } catch (Throwable t) {
+            renderFatal(t);
+        }
+    }
+
+    private void showHubInner() {
         detailOpen = false;
         pending.clear();
         chipStrip = null;

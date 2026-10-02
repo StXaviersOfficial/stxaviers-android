@@ -29,7 +29,7 @@ OUT=$PROJ/build
 AARS=/tmp/my-project/aars
 KS=/home/z/my-project/.secure/upload-keystore.jks
 KSPASS=$(cat /home/z/my-project/.secure/keystore.password)
-VERSION=1.1.9
+VERSION=1.2.0
 
 rm -rf "$OUT"
 mkdir -p "$OUT/compiled" "$OUT/gen" "$OUT/classes" "$OUT/dex" "$OUT/libs"

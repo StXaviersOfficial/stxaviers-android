@@ -387,18 +387,21 @@ public class ProfileActivity extends XdActivity {
         } catch (Throwable ignored) {}
     }
 
-    /** The Latest-log sheet: Disable logging · View log · Download
-     *  latestlog.txt — exactly the three options the owner specified. */
+    /** The Latest-log sheet (v1.2.0 owner spec — exactly 3 options):
+     *  1) Enable/Disable logging (state-aware, enabled by default)
+     *  2) latestlog.txt — opens the log INSIDE the app (with a Download
+     *     button at the top of the viewer)
+     *  3) What is logging? — plain-language explanation
+     */
     private void showLogSheet() {
         final boolean on = XLog.enabled();
         String[] items = {
                 getString(on ? R.string.log_disable : R.string.log_enable),
-                getString(R.string.log_view),
-                getString(R.string.log_download),
+                getString(R.string.log_viewer_title),          // latestlog.txt
+                getString(R.string.log_what),                  // What is logging?
         };
         new AlertDialog.Builder(this, R.style.Theme_XavierDrive_Dialog)
                 .setTitle(R.string.log_sheet_title)
-                .setMessage(R.string.log_sheet_hint)
                 .setItems(items, (d, which) -> {
                     if (which == 0) {
                         XLog.setEnabled(this, !on);
@@ -409,14 +412,28 @@ public class ProfileActivity extends XdActivity {
                     } else if (which == 1) {
                         showLogViewer();
                     } else {
-                        downloadLog();
+                        showWhatIsLogging();
                     }
                 })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
     }
 
-    /** Fullscreen scrollable viewer of latestlog.txt (newest at the end). */
+    /** v1.2.0: "What is logging?" — what the log is, why it exists, and
+     *  the privacy promise (stays on the phone; leaves only inside a bug
+     *  report the user themselves sends). */
+    private void showWhatIsLogging() {
+        new AlertDialog.Builder(this, R.style.Theme_XavierDrive_Dialog)
+                .setTitle(R.string.log_what)
+                .setMessage(R.string.log_what_body)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    /** Fullscreen scrollable viewer of latestlog.txt (newest at the end).
+     *  v1.2.0 owner spec: a DOWNLOAD button sits at the top, next to the
+     *  title — latestlog.txt can be saved to Downloads straight from the
+     *  viewer, no detour through a menu. */
     private void showLogViewer() {
         final String text = XLog.read();
         if (text.isEmpty()) {
@@ -462,7 +479,21 @@ public class ProfileActivity extends XdActivity {
         title.setTextSize(18f);
         title.setTypeface(Typefaces.outfitMedium(this));
         title.setTextColor(Fx.color(this, R.color.home_ink));
-        head.addView(title);
+        head.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        // v1.2.0: Download button AT THE TOP of the viewer — saves
+        // latestlog.txt to the system Downloads collection in one tap.
+        ImageView dl = new ImageView(this);
+        dl.setImageResource(R.drawable.ic_download);
+        dl.setColorFilter(Fx.color(this, R.color.home_brand));
+        dl.setPadding((int) (10 * dp), (int) (10 * dp),
+                (int) (10 * dp), (int) (10 * dp));
+        dl.setOnClickListener(x -> {
+            Ui.toast(this, getString(R.string.log_saving));
+            downloadLog();
+        });
+        head.addView(dl, new LinearLayout.LayoutParams(
+                (int) (44 * dp), (int) (44 * dp)));
         d.show();
         sc.post(() -> sc.fullScroll(View.FOCUS_DOWN));
     }
