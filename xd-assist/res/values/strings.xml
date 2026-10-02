@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XD Assist</string>
+    <string name="acc_service_label">XD Assist screen control</string>
+    <string name="acc_service_desc">Lets the developers you allow (through your own Termux bridge and key) read the screen and tap, swipe and type on it, so they can test and fix the school app on this phone. Nothing works until you enable it here, and it only talks to the backend address you typed in the app.</string>
+</resources>
