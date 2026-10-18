@@ -79,6 +79,12 @@ public class MainActivity extends Activity {
 
         // ── backend URL ───────────────────────────────────────────────
         root.addView(label("Bridge URL (the cloudflared link)"));
+        // v1.0.1: default to the WORKER's eternal proxy URL — it never
+        // changes no matter how often the phone's tunnel restarts, so a
+        // fresh install only needs the secure key pasted.
+        if (savedUrl == null || savedUrl.trim().isEmpty()) {
+            savedUrl = "https://stxaviers-auth.quackeditzofficial.workers.dev";
+        }
         urlField = field(savedUrl, false);
         urlField.setHint("https://xxxx.trycloudflare.com");
         root.addView(urlField);
