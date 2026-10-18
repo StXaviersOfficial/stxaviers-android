@@ -63,7 +63,13 @@ public class BugReportActivity extends XdActivity {
 
     private final Handler h = new Handler(Looper.getMainLooper());
     private XDState st;
-    private LinearLayout content;
+    // v1.2.1 ROOT-CAUSE FIX: the layout's bug_content is a FrameLayout but
+    // this field was declared LinearLayout since v1.1.8 — findViewById's
+    // generic cast compiled fine and then threw ClassCastException at
+    // RUNTIME (in onCreate, then AGAIN inside renderFatal where the old
+    // silent catch ate it before the log line) = the empty-hub bug that
+    // existed since day one. Declared correctly now.
+    private android.widget.FrameLayout content;
 
     /** One picked attachment for a new report. */
     private static final class Pending {
@@ -81,10 +87,14 @@ public class BugReportActivity extends XdActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        XLog.i("bug", "onCreate: start");
         try {
             setContentView(R.layout.activity_bug_report);
             st = XDState.get(this);
             content = findViewById(R.id.bug_content);
+            XLog.i("bug", "onCreate: layout set, content="
+                    + (content == null ? "NULL (layout id mismatch!)"
+                            : ("ok " + content.getClass().getSimpleName())));
             findViewById(R.id.bug_back).setOnClickListener(v -> {
                 if (detailOpen) { showHub(); } else { finish(); }
             });
@@ -100,12 +110,27 @@ public class BugReportActivity extends XdActivity {
 
     /** v1.2.0: fullscreen red error card — the in-app replacement for a
      *  crash. Shows the exact exception class + message so ANY device-
-     *  specific failure is finally visible. */
+     *  specific failure is finally visible. v1.2.1: stripped to the bare
+     *  minimum (no typeface/color-resource dependencies) so the fallback
+     *  itself can never fail silently. */
     private void renderFatal(Throwable t) {
+        XLog.e("bug", "fatal: " + t);
         try {
             setContentView(R.layout.activity_bug_report);
-            st = XDState.get(this);
             content = findViewById(R.id.bug_content);
+            if (content == null) {
+                // absolute last resort: build the whole screen by hand
+                android.widget.FrameLayout root = new android.widget.FrameLayout(this);
+                TextView bare = new TextView(this);
+                bare.setText("Bug report failed to open.\n\nError: " + t);
+                bare.setTextColor(0xFFCC2233);
+                bare.setTextSize(14f);
+                bare.setPadding(40, 60, 40, 40);
+                root.addView(bare);
+                setContentView(root);
+                content = root;
+                return;
+            }
             findViewById(R.id.bug_back).setOnClickListener(v -> finish());
             content.removeAllViews();
             TextView err = new TextView(this);
@@ -116,14 +141,13 @@ public class BugReportActivity extends XdActivity {
                     + "text is the diagnosis.");
             err.setTextSize(14f);
             err.setTextColor(0xFFCC2233);
-            err.setTypeface(Typefaces.interRegular(this));
             err.setPadding(dp(18), dp(18), dp(18), dp(18));
             content.addView(err, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT));
             XLog.e("bug", "hub failed: " + t);
-        } catch (Throwable ignored) {
-            // even the error renderer must never throw
+        } catch (Throwable t2) {
+            XLog.e("bug", "renderFatal itself failed: " + t2);
         }
     }
 
@@ -144,16 +168,31 @@ public class BugReportActivity extends XdActivity {
     private boolean detailOpen;
 
     private void showHub() {
-        // v1.2.0: also re-entered via the back button from a detail view —
-        // any failure here lands in the in-app red card, never a crash.
+        // v1.2.1: any failure lands in the in-app red card, never a crash;
+        // the render is POSTED to the content frame so it runs after the
+        // first layout pass (immune to layout-timing quirks), and every
+        // step is logged so latestlog.txt names the exact failure point.
         try {
-            showHubInner();
+            if (content == null) {
+                XLog.e("bug", "showHub: content frame is null");
+                renderFatal(new IllegalStateException(
+                        "content frame is null"));
+                return;
+            }
+            content.post(() -> {
+                try {
+                    showHubInner();
+                } catch (Throwable t) {
+                    renderFatal(t);
+                }
+            });
         } catch (Throwable t) {
             renderFatal(t);
         }
     }
 
     private void showHubInner() {
+        XLog.i("bug", "hub render: start");
         detailOpen = false;
         pending.clear();
         chipStrip = null;
@@ -173,16 +212,23 @@ public class BugReportActivity extends XdActivity {
                 getString(R.string.bug_report_new),
                 getString(R.string.bug_report_new_sub),
                 R.color.home_brand, () -> showReportForm()));
+        XLog.i("bug", "hub render: card 1 (report) added");
         box.addView(hubCard(R.drawable.ic_check_circle,
                 getString(R.string.bug_report_mine),
                 getString(R.string.bug_report_mine_sub),
                 R.color.home_muted, () -> loadList(false)));
-        if (st.isDeveloper) {
+        XLog.i("bug", "hub render: card 2 (my reports) added");
+        boolean dev = false;
+        try { dev = st != null && st.isDeveloper; } catch (Throwable ignored) {}
+        if (dev) {
             box.addView(hubCard(R.drawable.ic_people,
                     getString(R.string.bug_report_all),
                     getString(R.string.bug_report_all_sub),
                     R.color.home_muted, () -> loadList(true)));
+            XLog.i("bug", "hub render: card 3 (all, dev) added");
         }
+        XLog.i("bug", "hub render: done, children="
+                + box.getChildCount());
     }
 
     /** One big tappable card in the hub. */
