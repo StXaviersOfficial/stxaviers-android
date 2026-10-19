@@ -17,91 +17,54 @@ termux-setup-storage
   (Only needed if you want file access to the shared storage from the bridge.)
 - Install Termux from **F-Droid** if possible (the Play Store build is old).
 
-Then copy the bridge onto the phone:
+Then set up the bridge folder (one time):
 
 ```bash
 mkdir -p ~/xd && cd ~/xd
-curl -LO https://raw.githubusercontent.com/StXaviersOfficial/stxaviers-android/main/termux/server.py
+echo -n 'XD-your-key-here' > .key      # the XD key from the agent
+curl -LO https://raw.githubusercontent.com/StXaviersOfficial/stxaviers-android/main/termux/start-bridge.sh
 ```
 
-Install the **XD Assist** app too (from the xd-delivery repo, `xdassist-1.0.0.apk`).
+Install the **XD Assist** app too (xd-delivery repo, `xdassist-1.0.1.apk`):
+its Bridge URL field pre-fills the eternal worker URL — you only paste the
+key once. Then enable its accessibility service.
 
-## Every time you want the phone controllable (2 terminals)
-
-**Terminal 1 — start the bridge:**
+## Starting the bridge (ONE command — the self-healing supervisor)
 
 ```bash
-cd ~/xd
-export XD_KEY="pick-any-long-passphrase"
-python server.py
+cd ~/xd && bash start-bridge.sh
 ```
 
-**Terminal 2 — start the tunnel (new Termux session, swipe from the left edge
-→ New Session):**
+That's it. The supervisor (2026-10-19 redesign):
+
+- pulls the latest `server.py` + `supervisor-loop.sh` from GitHub itself,
+- starts the bridge server (localhost:25570, key-authenticated),
+- starts cloudflared and **registers every new tunnel URL with the worker**
+  automatically — tunnel URLs are never pasted anywhere again,
+- **survives closing the Termux session** (nohup + disown — the old version
+  died with the session, which is what killed the tunnel overnight),
+- **re-registers the current tunnel every 5 minutes** — the worker always
+  knows the phone is alive (registry age = liveness),
+- self-heals: tunnel dies → restarted with a fresh URL; server dies →
+  restarted. The XD Assist app reconnects on its own within seconds.
+
+Stop everything:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:25570
+pkill -f supervisor-loop.sh; pkill -f 'python server.py'; pkill -f 'cloudflared tunnel'
 ```
 
-Terminal 2 prints a link like `https://something-words-here.trycloudflare.com`
-near the top. **That link + your XD_KEY passphrase are the two things you paste
-in chat** so the developer can drive the phone (and they're what you type into
-the XD Assist app).
+Logs: `~/xd/supervisor.log` (supervisor) and `~/xd/bridge.log` (server).
+Tip: keep Termux alive with a wake lock (`termux-wake-lock`) so Android
+doesn't freeze it in the background.
 
-## Connect the XD Assist app (once)
+## What the agent can do through the bridge
 
-1. Open **XD Assist**
-2. Bridge URL → the `https://….trycloudflare.com` link from terminal 2
-3. Secure key → the same `XD_KEY` passphrase
-4. **SAVE & TEST BRIDGE** → should say `Bridge: ONLINE`
-5. **ENABLE SCREEN CONTROL** → Android Accessibility settings open → find
-   **XD Assist screen control** → switch it **ON**
+- `/exec` — run shell commands on the phone
+- `/fs/*` — list/read/write files (scoped to Termux home + shared storage)
+- `/rig/*` — the screen-control channel the XD Assist app consumes
+  (tap / swipe / type / dump screen / open app / navigation)
 
-From that moment the bridge can tap / swipe / type / back / home / read the
-screen, run shell commands, and move files — but ONLY while your two Termux
-terminals are running, and only through your own key.
-
-## Keep it alive while the screen is off
-
-Termux may freeze background processes when Android dozes. Before leaving the
-app:
-
-```bash
-termux-wake-lock
-```
-
-(acquire once per session; `termux-wake-unlock` turns it off.)
-
-## Stop everything when done
-
-Ctrl+C in both terminals (or close the sessions), then:
-
-```bash
-pkill -f server.py; pkill cloudflared
-```
-
-and switch **XD Assist screen control OFF** in Accessibility settings.
-
-## What the developer can do through the bridge (for reference)
-
-- `POST /exec {"cmd":"..."}` — run any Termux command (bash), root too if the
-  phone has `su`
-- `GET /fs/list?path=home/…` / `shared/…` — browse files
-- `GET /fs/read?path=…` / `POST /fs/write` — read/write files
-- `POST /rig/queue {"type":"tap|swipe|text|back|home|dump|key","x":..,"y":..}`
-  — a command the XD Assist app performs on the screen; `GET /rig/wait?id=…`
-  waits for its result
-
-Every request must carry header `X-Backend-Key: <your XD_KEY>` — without it the
-bridge answers `403 bad key`. If you start `server.py` **without** setting
-XD_KEY it warns loudly and accepts anyone — never do that.
-
-## Troubleshooting
-
-- **Bridge: UNREACHABLE in the app** → terminal 1 died, or the tunnel link
-  changed (quick tunnels pick a new link every start — re-paste the fresh one
-  into the app).
-- **`/rig/wait` says "timeout waiting for the assist app"** → the XD Assist
-  accessibility service is OFF (or the phone killed it) — re-enable it from
-  the app's button.
-- **`cloudflared: command not found` after install** → restart Termux once.
+Everything requires the `X-Backend-Key` header (your XD key), so only
+key-holders can drive the phone. The bridge **refuses to start** without
+the key set.
