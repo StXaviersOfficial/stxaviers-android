@@ -58,6 +58,27 @@ public final class Updater {
         return -1L;
     }
 
+    /**
+     * v1.2.2 (S25): streaming SHA-256 of a file — the update integrity
+     * gate. Returns null on any I/O failure (treated as a mismatch).
+     */
+    public static String sha256(File f) {
+        try {
+            java.security.MessageDigest md =
+                    java.security.MessageDigest.getInstance("SHA-256");
+            InputStream in = new java.io.FileInputStream(f);
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            in.close();
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : md.digest()) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     public File updatesDir() {
         File dir = ctx.getExternalFilesDir("updates");
         if (dir == null) dir = new File(ctx.getCacheDir(), "updates");

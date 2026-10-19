@@ -54,12 +54,17 @@ public final class UpdateCheck {
         public final String versionName;
         public final String apkUrl;
         public final String notes;
+        /** v1.2.2 (S25): APK digest from the manifest — when present and
+         *  64 hex chars, the downloaded file must match before install. */
+        public final String sha256;
 
-        public UpdateInfo(int versionCode, String versionName, String apkUrl, String notes) {
+        public UpdateInfo(int versionCode, String versionName, String apkUrl,
+                          String notes, String sha256) {
             this.versionCode = versionCode;
             this.versionName = versionName == null ? "" : versionName;
             this.apkUrl = apkUrl == null ? "" : apkUrl;
             this.notes = notes == null ? "" : notes;
+            this.sha256 = sha256 == null ? "" : sha256;
         }
     }
 
@@ -95,7 +100,8 @@ public final class UpdateCheck {
             String name = o.optString("versionName", "");
             String apkUrl = o.optString("apkUrl", "");
             String notes = o.optString("notes", "");
-            if (code > 0 && !name.isEmpty()) return new UpdateInfo(code, name, apkUrl, notes);
+            String sha256 = o.optString("sha256", "");
+            if (code > 0 && !name.isEmpty()) return new UpdateInfo(code, name, apkUrl, notes, sha256);
         } catch (Exception ignored) {}
         return null;
     }

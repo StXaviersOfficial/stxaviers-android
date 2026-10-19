@@ -438,6 +438,15 @@ public class SplashActivity extends XdActivity {
             boolean reusable = false;
             if (cached.exists() && cached.length() > 524288L) {  // >0.5 MB
                 reusable = (size <= 0) || (cached.length() == size);
+                if (reusable) {
+                    // v1.2.2 (S25): integrity gate on the REUSED file too — a
+                    // sha256 in the manifest must match before Install appears.
+                    String want = update.sha256 == null ? "" : update.sha256.trim().toLowerCase();
+                    if (want.length() == 64) {
+                        String got = Updater.sha256(cached);
+                        if (got == null || !got.equals(want)) reusable = false;
+                    }
+                }
                 if (!reusable) {
                     //noinspection ResultOfMethodCallIgnored
                     cached.delete();     // partial/corrupt — start clean
@@ -517,6 +526,27 @@ public class SplashActivity extends XdActivity {
 
             @Override
             public void onDone(File apk, long totalBytes) {
+                // v1.2.2 (S25): APK integrity gate — when the manifest carries
+                // a sha256, a mismatching download is deleted and NEVER offered
+                // for install. Android's signature continuity already guards
+                // cross-key updates; this closes the corrupted/tampered gap.
+                String want = pendingUpdate.sha256 == null ? ""
+                        : pendingUpdate.sha256.trim().toLowerCase();
+                if (want.length() == 64) {
+                    String got = Updater.sha256(apk);
+                    if (got == null || !got.equals(want)) {
+                        //noinspection ResultOfMethodCallIgnored
+                        apk.delete();
+                        downloadedApk = null;
+                        findViewById(R.id.progress_box).setVisibility(View.GONE);
+                        findViewById(R.id.btn_download).setVisibility(View.VISIBLE);
+                        TextView err = (TextView) findViewById(R.id.update_error);
+                        err.setText(getString(R.string.download_failed)
+                                + "\n(integrity check failed — the file was corrupted or tampered; download again)");
+                        err.setVisibility(View.VISIBLE);
+                        return;
+                    }
+                }
                 downloadedApk = apk;
                 findViewById(R.id.progress_box).setVisibility(View.GONE);
                 findViewById(R.id.install_box).setVisibility(View.VISIBLE);

@@ -430,6 +430,40 @@ public class HomeActivity extends XdActivity {
                             files.put(more.optJSONObject(i));
                         }
                     } catch (Throwable ignored) {}
+                } else {
+                    // v1.2.2: "All classes" (or developer with no class) —
+                    // the old code looked ONLY at the root folder here and
+                    // missed every class-subfolder notice (the "No notices
+                    // yet while notices exist" bug). Aggregate root + every
+                    // class folder in ONE or-chain query.
+                    try {
+                        JSONArray folders = Drive.list(
+                                "'" + root + "' in parents and "
+                                        + "mimeType='application/vnd"
+                                        + ".google-apps.folder' and "
+                                        + "trashed=false",
+                                "files(id,name)", "modifiedTime desc", 25);
+                        StringBuilder or = new StringBuilder();
+                        for (int i = 0; i < folders.length(); i++) {
+                            JSONObject fo = folders.optJSONObject(i);
+                            if (fo == null) continue;
+                            String fid = fo.optString("id", "");
+                            if (fid.isEmpty()) continue;
+                            if (or.length() > 0) or.append(" or ");
+                            or.append("'").append(fid).append("' in parents");
+                        }
+                        if (or.length() > 0) {
+                            JSONArray more = Drive.list(
+                                    "(" + or + ") and "
+                                            + "mimeType='application/json'"
+                                            + " and trashed=false",
+                                    "files(id,name,description,createdTime)",
+                                    "createdTime desc", 50);
+                            for (int i = 0; i < more.length(); i++) {
+                                files.put(more.optJSONObject(i));
+                            }
+                        }
+                    } catch (Throwable ignored) {}
                 }
                 for (int i = 0; i < files.length(); i++) {
                     JSONObject f = files.optJSONObject(i);

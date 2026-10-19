@@ -28,6 +28,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,23 +40,31 @@ SHARED = os.path.join(HOME, "storage", "shared")
 
 RIG_QUEUE = queue.Queue()
 RIG_RESULTS = {}          # id -> result dict
+RIG_RESULTS_MAX = 200     # S25 (B-04): results nobody waits for used to grow forever
 RIG_LOCK = threading.Lock()
 
 
 def resolve(path):
-    """Map bridge paths to real filesystem paths safely."""
+    """Map bridge paths to real filesystem paths safely.
+    S25 (B-01): home/ and shared/ are CLAMPED to their roots — ../ escapes
+    are rejected instead of silently resolving outside the sandbox."""
     if not path:
         raise ValueError("empty path")
     if path == "home":
         return HOME
     if path.startswith("home/"):
-        rest = path[len("home/"):]
-        return os.path.normpath(os.path.join(HOME, rest))
+        real = os.path.normpath(os.path.join(HOME, path[len("home/"):]))
+        if not (real == HOME or real.startswith(HOME + os.sep)):
+            raise ValueError("path escapes home")
+        return real
     if path == "shared":
         return SHARED if os.path.isdir(SHARED) else HOME
     if path.startswith("shared/"):
-        rest = path[len("shared/"):]
-        return os.path.normpath(os.path.join(SHARED, rest))
+        base = SHARED if os.path.isdir(SHARED) else HOME
+        real = os.path.normpath(os.path.join(base, path[len("shared/"):]))
+        if not (real == base or real.startswith(base + os.sep)):
+            raise ValueError("path escapes shared")
+        return real
     if path.startswith("abs/"):
         return os.path.normpath(path[len("abs/"):])
     raise ValueError("path must start with home/ shared/ or abs/")
@@ -119,6 +128,10 @@ class Handler(BaseHTTPRequestHandler):
                                                      "/rig/wait"]})
             if path == "/fs/list":
                 real = resolve(self.query("path", "shared"))
+                # S25 (B-03): listing a non-directory answers 400, not a 500
+                # with a leaked traceback-ish message.
+                if not os.path.isdir(real):
+                    return self.send_json({"ok": False, "error": "not a directory"}, 400)
                 entries = []
                 for name in sorted(os.listdir(real)):
                     full = os.path.join(real, name)
@@ -205,6 +218,10 @@ class Handler(BaseHTTPRequestHandler):
                 cid = body.get("id", "")
                 with RIG_LOCK:
                     RIG_RESULTS[cid] = body
+                    # S25 (B-04): bounded — drop the oldest entries so the
+                    # dict can never grow without limit.
+                    while len(RIG_RESULTS) > RIG_RESULTS_MAX:
+                        RIG_RESULTS.pop(next(iter(RIG_RESULTS)))
                 return self.send_json({"ok": True})
             return self.send_json({"ok": False, "error": "unknown endpoint " + path}, 404)
         except subprocess.TimeoutExpired:
@@ -214,8 +231,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # S25 (B-02): fail-closed — an unauthenticated bridge on a public
+    # tunnel is never acceptable; refuse to start instead of warning.
     if not XD_KEY:
-        print("!! XD_KEY not set — the bridge will be OPEN to anyone on the tunnel!", flush=True)
+        print("!! XD_KEY not set — REFUSING to start (the bridge would be open "
+              "to anyone on the tunnel). Start via start-bridge.sh.", flush=True)
+        sys.exit(1)
     print("xd-bridge starting on 127.0.0.1:%d" % PORT, flush=True)
     print("HOME=%s SHARED=%s" % (HOME, SHARED), flush=True)
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
