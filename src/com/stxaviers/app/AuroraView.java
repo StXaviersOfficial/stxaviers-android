@@ -7,6 +7,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
+import android.graphics.Matrix;
 import android.graphics.RadialGradient;
 import android.graphics.Shader;
 import android.util.AttributeSet;
@@ -31,6 +32,13 @@ public class AuroraView extends View {
     private long start = -1L;
     private boolean dark;
     private boolean animate = true;
+
+    /** v1.2.3: the four orb gradients are built ONCE (unit radius, centered
+     *  at the origin) and positioned per frame via the shader matrix — the
+     *  old code allocated 4 RadialGradient objects every frame on the login
+     *  screen (~240 allocations/sec of pure GC churn). Visuals are identical. */
+    private final RadialGradient[] orbShaders = new RadialGradient[4];
+    private final Matrix shaderM = new Matrix();
 
     public AuroraView(Context c) { super(c); init(); }
     public AuroraView(Context c, AttributeSet a) { super(c, a); init(); }
@@ -70,6 +78,15 @@ public class AuroraView extends View {
             if (dark) o.paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SCREEN));
             orbs[i] = o;
         }
+        // v1.2.3: cache the gradients — colors and alpha are frame-constant,
+        // only position + the ±8% radius pulse move, and the shader matrix
+        // carries both (scale r + translate x,y of a unit-radius gradient).
+        int alpha = dark ? 0xB3 : 0x5C;
+        for (int i = 0; i < 4; i++) {
+            orbShaders[i] = new RadialGradient(0f, 0f, 1f,
+                    (alpha << 24) | (orbs[i].col & 0xFFFFFF),
+                    orbs[i].col & 0xFFFFFF, Shader.TileMode.CLAMP);
+        }
         if (dark) {
             // night base wash
             setBackgroundColor(0xFF070a18);
@@ -91,10 +108,11 @@ public class AuroraView extends View {
             float x = (o.cx + o.ax * (float) Math.sin(t * o.sx * 2f * Math.PI + o.pX)) * w;
             float y = (o.cy + o.ay * (float) Math.cos(t * o.sy * 2f * Math.PI + o.pY)) * h;
             float r = o.r * min * (1f + 0.08f * (float) Math.sin(t * 0.35f * 2f * Math.PI + i));
-            int alpha = dark ? 0xB3 : 0x5C;
-            int c = (alpha << 24) | (o.col & 0xFFFFFF);
-            o.paint.setShader(new RadialGradient(x, y, r,
-                    c, (o.col & 0xFFFFFF), Shader.TileMode.CLAMP));
+            shaderM.reset();
+            shaderM.postScale(r, r);
+            shaderM.postTranslate(x, y);
+            orbShaders[i].setLocalMatrix(shaderM);
+            o.paint.setShader(orbShaders[i]);
             canvas.drawCircle(x, y, r, o.paint);
         }
         if (animate) invalidate();

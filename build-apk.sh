@@ -20,16 +20,19 @@
 # the AAR manifests automatically; this pipeline does it by hand).
 set -e
 
-SDK=/tmp/my-project/android-sdk
+SDK="${ANDROID_SDK:-/tmp/my-project/android-sdk}"
 BT=$SDK/build-tools/34.0.0
 PLATFORM=$SDK/platforms/android-34/android.jar
-JDK=/tmp/my-project/jdk17
-PROJ=/home/z/my-project/stxaviers-android
+JDK="${JAVA17_HOME:-/tmp/my-project/jdk17}"
+PROJ="$(cd "$(dirname "$0")" && pwd)"
 OUT=$PROJ/build
-AARS=/tmp/my-project/aars
-KS=/home/z/my-project/.secure/upload-keystore.jks
-KSPASS=$(cat /home/z/my-project/.secure/keystore.password)
-VERSION=1.2.2
+AARS="${ANDROID_AARS:-/tmp/my-project/aars}"
+KS="${XD_KEYSTORE:-/home/z/my-project/.secure/upload-keystore.jks}"
+if [ ! -f "$KS" ] && [ -f /home/z/my-project/.secure/keystore.jks ]; then
+  KS=/home/z/my-project/.secure/keystore.jks
+fi
+KSPASS="${XD_KEYSTORE_PASS:-$(cat /home/z/my-project/.secure/keystore.password)}"
+VERSION=1.2.3
 
 rm -rf "$OUT"
 mkdir -p "$OUT/compiled" "$OUT/gen" "$OUT/classes" "$OUT/dex" "$OUT/libs"

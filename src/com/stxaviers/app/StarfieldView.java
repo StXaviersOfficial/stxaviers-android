@@ -5,7 +5,9 @@ import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.RadialGradient;
 import android.graphics.Shader;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
@@ -25,6 +27,9 @@ public class StarfieldView extends View {
     private static final class Star {
         float x, y, r, tw, ts, vx, vy, depth;
         int col;
+        /** v1.2.3: cached bokeh gradient (light theme) — stops the old
+         *  ~46 RadialGradient allocations per frame (~2,760/sec). */
+        RadialGradient bokeh;
     }
 
     private static final class Shoot {
@@ -39,6 +44,7 @@ public class StarfieldView extends View {
     private boolean dark, animate = true;
     private float px = 0.5f, py = 0.5f;          // parallax target (touch)
     private float pxc = 0.5f, pyc = 0.5f;        // eased current
+    private final Matrix shaderM = new Matrix(); // v1.2.3: reuses one Matrix for all cached shaders
 
     public StarfieldView(Context c) { super(c); init(); }
     public StarfieldView(Context c, AttributeSet a) { super(c, a); init(); }
@@ -81,6 +87,15 @@ public class StarfieldView extends View {
                 s.col = Color.HSVToColor(new float[]{hue, 0.65f, rnd.nextFloat() * 0.25f + 0.7f});
             }
             s.depth = s.r / (2.2f * d);
+            if (!dark) {
+                // v1.2.3: build the bokeh gradient ONCE per star (radius and
+                // color are seed-fixed) at the origin with a FULL-alpha center;
+                // the per-frame twinkle rides on paint alpha, and the matrix
+                // carries the position — zero allocations per frame now.
+                s.bokeh = new RadialGradient(0f, 0f, s.r * 2.2f,
+                        0xFF000000 | (s.col & 0xFFFFFF), 0x00000000,
+                        Shader.TileMode.CLAMP);
+            }
             stars.add(s);
         }
     }
@@ -139,12 +154,19 @@ public class StarfieldView extends View {
             float oy = (pyc - 0.5f) * 16f * s.depth;
             paint.setShader(null);
             paint.setColor(s.col);
-            paint.setAlpha((int) (a * 255f));
             if (dark) {
+                paint.setAlpha((int) (a * 255f));
                 canvas.drawCircle(s.x + ox, s.y + oy, s.r, paint);
             } else {
-                // bokeh: soft edge via radial gradient
-                paint.setShader(new RadialGradientCompat().make(s.x + ox, s.y + oy, s.r * 2.2f, s.col, (int) (a * 255f)));
+                // bokeh: cached gradient via matrix translate. The old code
+                // baked the twinkle alpha into a fresh shader every frame AND
+                // multiplied it by paint alpha (a*a effective); baking the
+                // center at full alpha + paint alpha a*a reproduces it exactly.
+                shaderM.reset();
+                shaderM.postTranslate(s.x + ox, s.y + oy);
+                s.bokeh.setLocalMatrix(shaderM);
+                paint.setShader(s.bokeh);
+                paint.setAlpha((int) (a * a * 255f));
                 canvas.drawCircle(s.x + ox, s.y + oy, s.r * 2.2f, paint);
                 paint.setShader(null);
             }
@@ -190,13 +212,5 @@ public class StarfieldView extends View {
             }
         }
         if (animate) invalidate();
-    }
-
-    /** tiny shim so the bokeh branch reads cleanly */
-    private static final class RadialGradientCompat {
-        android.graphics.RadialGradient make(float cx, float cy, float r, int col, int alpha) {
-            return new android.graphics.RadialGradient(cx, cy, r,
-                    ((alpha) << 24) | (col & 0xFFFFFF), 0x00000000, Shader.TileMode.CLAMP);
-        }
     }
 }
