@@ -1,66 +1,71 @@
 # XavierDrive — Android App
 
 The official **XavierDrive** app for **St. Xavier's Jr./Sr. School, Goshala Road,
-Ramna, Muzaffarpur (Bihar) 842002** — native Android, zero Gradle.
+Ramna, Muzaffarpur (Bihar) 842002** — native Android, pure Java, zero Gradle.
 
-**Repo:** public · **Current release:** v2.0.0 (versionCode 14) ·
-**Download:** https://stxaviers.pages.dev/apk/xavierdrive2.0.0.apk
+**Repo:** public · **Current release:** v1.2.2 (versionCode 25) ·
+**Download:** https://stxaviers.pages.dev/apk/xavierdrive1.2.2.apk
+
+> **This repository contains ONLY the XavierDrive app** (source, resources,
+> fonts, build script). The owner's separate device-rig system (XD Assist
+> accessibility app + Termux bridge) lives in its own repo:
+> **`StXaviersOfficial/xd-assist`** — it is *not* part of this app and must
+> not be swept, refactored, or mixed up with it. Release binaries are never
+> committed here; APKs ship via the update channel (Cloudflare Pages +
+> worker `APP_LATEST`).
 
 ## What's inside
 
 Pure Java + platform views (no Gradle, no AndroidX UI framework) — built with
-`aapt2 + javac + d8 + zipalign + apksigner` (see `build-apk.sh`).
+`aapt2 + javac + d8 + zipalign + apksigner` (see `build-apk.sh`; it merges the
+Credential Manager AAR stack at build time).
 
-- **SplashActivity** — cinematic splash + the full in-app updater: true
-  progress bar with real APK size, live download speed + ETA, auto install
-  dialog, install-unknown-apps permission hand-off.
-- **LoginActivity** — the animated login page (aurora, starfield, 3D-tilt
-  glass card, magnetic Google button), auto light/dark.
-- **NativeGoogleSignIn** — three-step chain: Google Credential Manager
-  (instant bottom-sheet picker with every device account) -> the classic
-  legacy GoogleSignIn account chooser (fires automatically wherever
-  Credential Manager is unsupported — the fix for
-  GetCredentialProviderConfigurationException) -> Play Services update
-  rescue -> WebView sign-in. ID token exchanged for the school session at
-  `POST /api/auth/mobile` (worker).
-- **FabricSpaceView** — the animated space-fabric background. Splash
-  (update checker) runs a real GPU fluid shader on Android 13+ (AGSL
-  domain-warped fBm — continuously mixing colours) with an upgraded
-  SCREEN-blended canvas nebula on older devices; the old software-layer
-  bug that froze the animation on-device is gone.
-- **LegalActivity** — in-app Terms of Service / Privacy Policy viewer
-  linked from the login note.
-- **Typography** — every display font verified to draw GENUINE lowercase
-  (Bungee/Bebas removed: their lowercase is just small caps). Login:
-  Shrikhand title, Poppins school line (static), Rubik Glitch
-  "Welcome back" with full glitch animation. Splash: Monoton title,
-  Rubik Puddles status, VT323 version.
-- **MainActivity** — the full portal in a hardened WebView with
-  blank-page self-healing watchdog. Since v2.0.0 the app shell owns
-  sign-in: any attempt by the embedded site to navigate into the web
-  Google form (worker `/login`, `accounts.google.com`) is intercepted
-  and routed back to the app's own login screen, and a boot-time
-  `/me` probe sends dead sessions straight to sign-in — the portal can
-  never host a web login or dead-end into "please wait".
-- **UpdateCheck** — reads the installed version from the PackageManager
-  (never a stale constant) and compares against `/api/app/version`.
+**~52 Java classes, 20 activities** — the native portal:
 
-## v2.0.0 — the login-loop fix
+- **SplashActivity** — cinematic splash + in-app updater with true progress,
+  download speed/ETA, auto-install hand-off, and (since v1.2.2) an
+  **APK SHA-256 integrity gate**: the downloaded update is verified against
+  the hash pinned in the worker's `APP_LATEST` before it can ever install.
+- **LoginActivity / NativeGoogleSignIn** — Google Credential Manager
+  bottom-sheet picker → legacy GoogleSignIn fallback → Play Services rescue
+  → WebView sign-in. ID token exchanged for the school session at the worker.
+- **HomeActivity** — dashboard with role-aware cards; since v1.2.2 it
+  **aggregates announcements** (ANNOUNCEMENTS folder + dashboard notices
+  deduplicated into one feed).
+- **FilesActivity** — the Google Drive folder tree (FILES per class) with
+  in-app preview/download.
+- **NoticesActivity** — the Notice Hub.
+- **TimetableActivity / AttendanceActivity / LogbookActivity** — class
+  timetable, attendance tiles, teacher logbook.
+- **LiveActivity + AdminLiveActivity** — live chat channel (ChatSync
+  long-poll), with an admin console view.
+- **AiActivity + AiSettingsActivity** — the in-app AI assistant, voice input
+  (VoiceInput), TTS playback (TtsPlayer).
+- **AdminRolesActivity / AdminFilesActivity** — school admin tools
+  (role roster, Drive file management).
+- **BugReportActivity** — device-specs + latestlog.txt bug reports; since
+  v1.2.1 crash-proofed against layout/view-type drift (the empty-hub bug).
+- **ProfileActivity / SchoolActivity / SettingsActivity / LegalActivity** —
+  profile sync, school info, settings, ToS/privacy viewer.
 
-Sign-in worked (picker, "Welcome" toast) but the app then bounced to the
-"please wait" screen and into Google's web email/password page, every time —
-even automatically on app open. The native ID-token sign-in creates a session
-with no Google access token (an ID token can't mint one), and the portal's
-`/token` check treated that as "not signed in". Fixed in two layers: the
-worker now issues an app-scoped session token for native sessions, and the
-app intercepts any portal attempt to start a web sign-in.
+Background views (AuroraView, StarfieldView, FabricSpaceView,
+AnimatedGradientView, ShimmerTextView, WaveformView, WordmarkView) render the
+animated UI; since v1.2.3 they **pause their animators when detached** and
+respect the system animator-duration scale.
 
-## Sign-in credentials
+## Architecture
 
-Google Cloud project `stxaviersapp` — see `credentials.txt` (web client,
-Android client SHA-1, Digital Asset Links). APKs are signed with the
-`stxaviers-upload` release key; its SHA-1 is registered on the Android
-OAuth client, so updates MUST keep using that key.
+```
+app (this repo)  ──HTTPS──▶  Cloudflare Worker (repo: xavier-drive)
+                                │  auth · roles · sessions · bug reports
+                                │  APP_LATEST update manifest (sha256-pinned)
+                                ▼
+                          Google Drive (school storage: FILES, LOGBOOK,
+                          ANNOUNCEMENTS, TIMETABLE folders)
+```
+
+The worker also proxies the owner's device-rig endpoints (`/rig/*`,
+`/internal/device-tunnel`) — rig code itself lives in `xd-assist`.
 
 ## Build
 
@@ -68,6 +73,39 @@ OAuth client, so updates MUST keep using that key.
 bash build-apk.sh   # needs android-sdk (build-tools 34, platform 34) + JDK17
 ```
 
-The build downloads nothing at runtime — it merges the Credential Manager
-AAR stack (androidx.credentials, googleid, play-services) from
-`/tmp/my-project/aars`; see the script header for the manual AAR pipeline.
+Build downloads nothing at runtime; the Credential Manager AARs are merged
+from a local directory (see the script header). APKs are signed with the
+`stxaviers-upload` release key — its SHA-1 is registered on the Android
+OAuth client, so updates MUST keep using that key.
+
+Every release must bump the update channel too (worker `APP_LATEST` +
+Pages APK) — that's how the app's updater learns about new versions.
+
+## Improvement backlog (for AI-assisted sweeps)
+
+Curated so a code-review agent knows what is **already done** and what is
+**pre-approved** to change — please don't redo the done items:
+
+- [x] *v1.2.1:* bug-report hub ClassCastException root-caused and fixed
+- [x] *v1.2.2:* APK sha256 integrity gate on the update path
+- [x] *v1.2.3:* custom views pause animators on detach (battery/jank)
+- [x] *v1.2.3:* typed `ViewUtils.find(view, id, Class)` helper + audit of
+      every `findViewById` cast against the XML layouts (the whole
+      ClassCastException bug class, not just one instance)
+- [x] *S26:* APKs/idsig binaries purged from Git tree; `.gitignore` guards
+      added; XD Assist + Termux bridge moved to `xd-assist` repo
+- [ ] **SQLite offline cache** for Notices / Timetable / Attendance
+      (`android.database.sqlite`, zero external deps — fits the no-Gradle
+      build) so students see content instantly instead of waiting on the
+      network. **Highest-value remaining item.**
+- [ ] **Worker auth hardening**: replace the long-lived session cookie with
+      short-lived, role-scoped HMAC-signed tokens (issued at login by
+      `GoogleAuth`/`AuthActivity`, verified by the worker) so a decompiled
+      APK can't spoof admin requests.
+- [ ] **Package modularization**: split the flat `com.stxaviers.app` package
+      into `ui.*`, `data.*`, `bridge.*` subpackages (mechanical rename —
+      update `build-apk.sh` source list, no other build impact).
+- [ ] **HTTP layer modernization** (only if the zero-dependency constraint is
+      relaxed): OkHttp/Retrofit + ETag caching, or add retry/backoff to
+      `ApiClient` as the dependency-free version.
+- [ ] **R8 shrinking** in `build-apk.sh` (needs an R8 jar in the pipeline).
